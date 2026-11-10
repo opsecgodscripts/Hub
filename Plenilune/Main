@@ -56,8 +56,8 @@ local UI = { DestroyHooks = {} }
 
 -- COLOUR PICKER
 -- UiLibrary has no colour picker, so this is a custom element built from the library's own drawing calls.
--- It is a row with the name, the hex code and a swatch; click the swatch to open hue / saturation / brightness
--- bars (click or drag) and a row of quick colours. The value is saved under its Flag as "#RRGGBB".
+-- It is a row with the name and a swatch; click the swatch to open a panel on top of the menu with hue /
+-- saturation / brightness bars (click or drag) and a row of quick colours. The value is saved under its Flag as "#RRGGBB".
 UI.ColorCache = {}
 function UI.Hex(c)
     return string.format("#%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
@@ -113,34 +113,94 @@ UI.Picker = {}
 UI.Picker.__index = UI.Picker
 local PICK = { row = 18, bar = 10, gap = 8, segs = 24, swatch = 14 }
 
+-- only one panel is open at a time; it floats on top of the elements under it instead of pushing them down
+function UI.ClosePicker()
+    if UI.OpenPicker then
+        UI.OpenPicker.Open = false
+        UI.OpenPicker._drag = nil
+    end
+    UI.OpenPicker = nil
+end
+
+local function inside(px, py, x, y, w, h)
+    return px >= x and px <= x + w and py >= y and py <= y + h
+end
+
+-- Runs before the window draws anything (hooked into the library's overlay click step, the same way its dropdown
+-- lists work), so a click on the open panel is never taken by an element underneath it.
+function UI.PickerPreClick(win)
+    local p = UI.OpenPicker
+    if not p then return end
+    local seen = p._seen
+    p._seen = false
+    if not seen or not p._panel then
+        UI.ClosePicker() -- the picker wasn't drawn last frame (tab changed, hidden)
+        return
+    end
+    if not win._clicked then return end
+    local r = p._panel
+    if inside(win._mouseX, win._mouseY, r.x, r.y, r.w, r.h) then
+        p._click = { win._mouseX, win._mouseY }
+        win._clicked = false
+    elseif not (p._swatch and inside(win._mouseX, win._mouseY, p._swatch.x, p._swatch.y, p._swatch.w, p._swatch.h)) then
+        UI.ClosePicker() -- clicked somewhere else: close, and let the click through
+    end
+end
+
+function UI.ViewportHeight()
+    local ok, h = pcall(function() return workspace.CurrentCamera.ViewportSize.Y end)
+    return ok and type(h) == "number" and h or 1080
+end
+
 function UI.Picker:_height()
-    if not self.Open then return PICK.row end
-    return PICK.row + 3 * (PICK.gap + PICK.bar) + PICK.gap + PICK.swatch
+    return PICK.row
 end
 
 function UI.Picker:_draw(win, x, y, w)
     local th = win.Theme
     local sw, sh = 30, 12
     local sx, sy = x + w - sw, y + (PICK.row - sh) / 2
+    self._swatch = { x = sx - 4, y = y, w = sw + 4, h = PICK.row }
     if win:_clickIn(sx - 4, y, sw + 4, PICK.row) then
-        self.Open = not self.Open
-        self._drag = nil
+        local wasOpen = self.Open
+        UI.ClosePicker()
+        if not wasOpen then
+            self.Open = true
+            UI.OpenPicker = self
+            win._openDropdown = nil -- a dropdown list and the panel would overlap
+            win._overlay = nil
+        end
         win._forceRedraw = true
     end
+    -- a dropdown list opening closes the panel
+    if self.Open and win._openDropdown then UI.ClosePicker() end
+
     win:_text(self.Text, x, y + 1, th.Text, 13, 12)
-    win:_text(self._hex, sx - 6, y + 3, th.TextDim, 12, 12, "right")
     win:_box(sx, sy, sw, sh, self.Value, self.Open and th.Accent or th.Border, 11, 3)
     if not self.Open then return end
+    self._seen = true
 
-    local top = y + PICK.row + PICK.gap
+    -- the panel: below the row, or above it when there is no room below
     local step = PICK.bar + PICK.gap
+    local ph = PICK.gap + 3 * step + PICK.swatch + PICK.gap
+    local py = y + PICK.row + 4
+    if py + ph > UI.ViewportHeight() - 4 then py = y - ph - 4 end
+    self._panel = { x = x, y = py, w = w, h = ph }
+
+    local ix, iw = x + 8, w - 16
+    local top = py + PICK.gap
     local keys = { "H", "S", "V" }
-    for i, key in ipairs(keys) do
-        if win:_clickIn(x, top + (i - 1) * step - 3, w, PICK.bar + 6) then self._drag = key end
+    local click = self._click
+    self._click = nil
+
+    if click then
+        for i, key in ipairs(keys) do
+            if inside(click[1], click[2], ix, top + (i - 1) * step - 3, iw, PICK.bar + 6) then self._drag = key end
+        end
     end
     if self._drag then
         if win._down then
-            local pct = (win._mouseX - x) / w
+            local pct = (win._mouseX - ix) / iw
             pct = pct < 0 and 0 or (pct > 1 and 1 or pct)
             self[self._drag] = pct
             -- keep the hue / saturation the user picked even where the colour itself can't hold them (black, grey)
@@ -150,31 +210,32 @@ function UI.Picker:_draw(win, x, y, w)
         end
     end
 
+    win:_box(x, py, w, ph, th.Section or th.Element, th.Border, 40, 4)
     -- the three bars, drawn as segments (Drawing has no gradients)
-    local seg = w / PICK.segs
+    local seg = iw / PICK.segs
     for j = 0, PICK.segs - 1 do
         local t = (j + 0.5) / PICK.segs
-        local sx2 = x + j * seg
-        win:_rect(sx2, top, seg + 1, PICK.bar, UI.FromHSV(t, 1, 1), 11)
-        win:_rect(sx2, top + step, seg + 1, PICK.bar, UI.FromHSV(self.H, t, self.V), 11)
-        win:_rect(sx2, top + step * 2, seg + 1, PICK.bar, UI.FromHSV(self.H, self.S, t), 11)
+        local bx = ix + j * seg
+        win:_rect(bx, top, seg + 1, PICK.bar, UI.FromHSV(t, 1, 1), 42)
+        win:_rect(bx, top + step, seg + 1, PICK.bar, UI.FromHSV(self.H, t, self.V), 42)
+        win:_rect(bx, top + step * 2, seg + 1, PICK.bar, UI.FromHSV(self.H, self.S, t), 42)
     end
     for i, key in ipairs(keys) do
-        local mx = x + math.floor(self[key] * (w - 2) + 0.5)
+        local mx = ix + math.floor(self[key] * (iw - 2) + 0.5)
         local my = top + (i - 1) * step - 2
-        win:_rect(mx - 1, my, 4, PICK.bar + 4, th.Section or th.Element, 12)
-        win:_rect(mx, my + 1, 2, PICK.bar + 2, th.Text, 13)
+        win:_rect(mx - 1, my, 4, PICK.bar + 4, th.Section or th.Element, 43)
+        win:_rect(mx, my + 1, 2, PICK.bar + 2, th.Text, 44)
     end
 
     -- quick colours
-    local py = top + step * 3
+    local qy = top + step * 3
     local n = #UI.Presets
-    local gapX = (w - n * PICK.swatch) / math.max(n - 1, 1)
+    local gapX = (iw - n * PICK.swatch) / math.max(n - 1, 1)
     for i, c in ipairs(UI.Presets) do
-        local px = x + (i - 1) * (PICK.swatch + gapX)
-        if win:_clickIn(px, py, PICK.swatch, PICK.swatch) then self:Set(c) end
-        local hover = win:_over(px, py, PICK.swatch, PICK.swatch)
-        win:_box(px, py, PICK.swatch, PICK.swatch, c, hover and th.Accent or th.Border, 11, 3)
+        local qx = ix + (i - 1) * (PICK.swatch + gapX)
+        if click and inside(click[1], click[2], qx, qy, PICK.swatch, PICK.swatch) then self:Set(c) end
+        local hover = win:_over(qx, qy, PICK.swatch, PICK.swatch)
+        win:_box(qx, qy, PICK.swatch, PICK.swatch, c, hover and th.Accent or th.Border, 42, 3)
     end
 end
 
@@ -303,16 +364,6 @@ local function GetAnimatorAddr(model)
     return addr
 end
 
-local function FactionAttr(m) return m:GetAttribute("Faction") end
--- "Slayer" / "Demon" from a character model's Faction attribute, nil if it has none
-local function GetFaction(model)
-    local ok, f = pcall(FactionAttr, model)
-    if ok and type(f) == "string" and f ~= "" then return f end
-    return nil
-end
-
-local MyFaction = nil -- the local player's Faction attribute, refreshed with the enemy list
-
 local Enemies, NextRefresh = {}, 0
 local EnemyCache = {}
 local LocalHRP = nil
@@ -331,7 +382,6 @@ local function BuildEntry(model)
         animator = animator,
         isPlayer = Players:FindFirstChild(name) ~= nil,
         skipUntil = 0,
-        factionAt = 0,
     }
 end
 
@@ -340,12 +390,10 @@ local function RefreshEnemies(now)
     local lp = Players.LocalPlayer
     LocalHRP = lp and lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") or nil
 
-    local live = workspace:FindFirstChild("Alive")
+    local live = workspace:FindFirstChild("Characters")
     if not live then Enemies, EnemyCache = list, nextCache return end
 
     local myName = lp and lp.Name
-    local me = (myName and live:FindFirstChild(myName)) or (lp and lp.Character)
-    MyFaction = me and GetFaction(me) or nil
 
     for _, model in ipairs(live:GetChildren()) do
         local addr = model.Address
@@ -356,11 +404,6 @@ local function RefreshEnemies(now)
             local entry = (cached and not cached.dead and not cached.stale) and cached or BuildEntry(model)
             if entry then
                 nextCache[addr] = entry
-                -- factions rarely change, so only re-read them every couple of seconds
-                if entry.isPlayer and now >= entry.factionAt then
-                    entry.factionAt = now + 2
-                    entry.faction = GetFaction(model)
-                end
                 if entry.name ~= myName then list[#list + 1] = entry end
             else
                 nextCache[addr] = {dead = true, retryAt = now + 3}
@@ -971,6 +1014,22 @@ Window = Library:CreateWindow({
 Window._onClose = function()
     for _, fn in ipairs(UI.DestroyHooks) do pcall(fn) end
 end
+-- colour picker panel: gets clicks before anything is drawn, and closes when the tab changes or the menu hides
+do
+    local handleOverlay, selectTab, toggle = Window._handleOverlayClick, Window.SelectTab, Window.Toggle
+    function Window:_handleOverlayClick(...)
+        UI.PickerPreClick(self)
+        return handleOverlay(self, ...)
+    end
+    function Window:SelectTab(...)
+        UI.ClosePicker()
+        return selectTab(self, ...)
+    end
+    function Window:Toggle(...)
+        UI.ClosePicker()
+        return toggle(self, ...)
+    end
+end
 
 local mainTab       = Window:CreateTab({ Name = "Auto Parry", Icon = ">" })
 local visualsTab    = Window:CreateTab({ Name = "Visuals", Icon = "*" })
@@ -1078,41 +1137,6 @@ friendsDropdown = friendsSec:AddDropdown({
 friendsSec:AddButton({ Name = "Refresh player list", Callback = RefreshFriendDropdown })
 friendsSec:AddButton({ Name = "Save exclusions", Callback = SaveIgnoredFriends })
 
-end
-
--- WHITELISTS TAB: FACTION
-do
-local factionSec = whitelistTab:CreateSection({ Name = "Faction", Side = "Right" })
-factionSec:AddLabel("Skip players on your own faction (Slayer / Demon).")
-local yourFactionStatus = UI.Status(factionSec, "Your faction", "-")
-
-local function ReadMyFaction()
-    local lp = Players.LocalPlayer
-    local alive = workspace:FindFirstChild("Alive")
-    local me = (lp and alive and alive:FindFirstChild(lp.Name)) or (lp and lp.Character)
-    return me and GetFaction(me) or nil
-end
-
-local function ShowMyFaction()
-    local f = ReadMyFaction()
-    yourFactionStatus:SetValue(f or "-")
-    return f
-end
-
--- Off (default): players whose Faction attribute matches yours are ignored by auto parry
-Reg("sb_parry_same_faction", factionSec:AddToggle({
-    Name = "Parry Same Faction",
-    Default = false,
-    Flag = "sb_parry_same_faction",
-}))
-factionSec:AddButton({
-    Name = "Check my faction",
-    Callback = function()
-        local f = ShowMyFaction()
-        Window:Notify("Faction", f and ("You are: " .. f) or "No Faction attribute found on your character.", 3)
-    end,
-})
-ShowMyFaction()
 end
 
 -- AUTO PARRY TAB
@@ -1263,7 +1287,7 @@ local espMiscSec = visualsTab:CreateSection({ Name = "Misc", Side = "Left" })
 espMiscSec:AddLabel("Nothing here yet.")
 
 local espEntitiesSec = visualsTab:CreateSection({ Name = "Entities", Side = "Right" })
--- every other player under workspace.Alive (needs Enabled in Options)
+-- every other player under workspace.Characters (needs Enabled in Options)
 Reg("esp_player", espEntitiesSec:AddToggle({
     Name = "Player ESP",
     Default = false,
@@ -1505,7 +1529,7 @@ do
 
     local function refreshTargets()
         local seen = {}
-        local live = workspace:FindFirstChild("Alive")
+        local live = workspace:FindFirstChild("Characters")
         local lp = Players.LocalPlayer
         local myName = lp and lp.Name
         if live then
@@ -1875,11 +1899,11 @@ local function GetTargetFromPath(path)
         end
         return current
     end
-    return walk(path) or walk("Alive/" .. path)
+    return walk(path) or walk("Characters/" .. path)
 end
 
 local function FindLiveByName(name)
-    local live = workspace:FindFirstChild("Alive")
+    local live = workspace:FindFirstChild("Characters")
     if not live then return nil end
     for _, model in ipairs(live:GetChildren()) do
         if CleanName(model.Name) == name then return model end
@@ -1971,7 +1995,7 @@ local function RefreshLists()
 
     NpcMap = {}
     local npcNames = {}
-    local live = workspace:FindFirstChild("Alive")
+    local live = workspace:FindFirstChild("Characters")
     if live then
         for _, model in ipairs(live:GetChildren()) do
             local n = model.Name
@@ -2053,7 +2077,7 @@ npcNextBtn = trackSec:AddButton({ Name = "Next NPC", Callback = function() StepD
 
 pathBox = trackSec:AddTextbox({
     Name = "NPC Path",
-    Placeholder = "Alive/NpcName (optional)",
+    Placeholder = "Characters/NpcName (optional)",
     Default = "",
 })
 UpdateTargetVisibility("LocalPlayer")
@@ -2362,7 +2386,6 @@ local cNpcs    = Controls.sb_parry_npcs
 local cRange   = Controls.sb_range
 local cGeneral = Controls.sb_use_general_range
 local cChance  = Controls.sb_parry_chance
-local cSameFaction = Controls.sb_parry_same_faction
 
 -- HIT LOG (Debug tab, "Log Hits"): when an animation from an enemy is first seen, remember its start time and
 -- your health. If your health later drops below that value while the animation is still going (plus a short
@@ -2372,7 +2395,7 @@ local HitWatch = { list = {} }
 
 local function LocalHealth()
     local lp = Players.LocalPlayer
-    local alive = workspace:FindFirstChild("Alive")
+    local alive = workspace:FindFirstChild("Characters")
     local model = alive and lp and alive:FindFirstChild(lp.Name)
     local hum = model and model:FindFirstChild("Humanoid")
     if not hum then return nil end
@@ -3082,14 +3105,12 @@ local function ScanStep(now)
     -- parried beyond it either, whatever the normal range is)
     local nearRange = Get("sb_track_range") or 40
     local seenNow, tracked = {}, 0
-    local skipFaction = (not cSameFaction.Value) and MyFaction or nil
     local watchFeint = Get("sb_feint_detect")
     if not watchFeint and Feint.Count > 0 then Feint.Clear() end
 
     for _, enemy in ipairs(Enemies) do
         if ((enemy.isPlayer and doPlayers) or (not enemy.isPlayer and doNpcs))
            and not (enemy.isPlayer and FriendsLower[enemy.lname])
-           and not (skipFaction and enemy.isPlayer and enemy.faction == skipFaction)
            and now >= enemy.skipUntil then
 
             local dist = Dist(enemy)
