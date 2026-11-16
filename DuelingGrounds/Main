@@ -113,6 +113,37 @@ local function DisplayName(name)
     return short ~= "" and short or cleaned
 end
 
+-- CHARACTERS
+-- Every character is a model straight in workspace: yours is "Player_Client", everyone else's is "Player".
+-- The names are the same for everyone, so models are told apart by their Address. R6 and R15 both have a
+-- HumanoidRootPart and Humanoid > Animator, which is all that is read from them.
+local SELF_MODEL, OTHER_MODEL = "Player_Client", "Player"
+
+local function MyCharacter()
+    local me = workspace:FindFirstChild(SELF_MODEL)
+    if me then return me end
+    local lp = Players.LocalPlayer
+    return lp and lp.Character
+end
+
+local function OtherCharacters()
+    local list = {}
+    for _, model in ipairs(workspace:GetChildren()) do
+        if model.Name == OTHER_MODEL then list[#list + 1] = model end
+    end
+    return list
+end
+
+-- label for logs / ESP: the humanoid's display name when the game sets one, else "Player"
+local function CharacterLabel(model)
+    local ok, name = pcall(function()
+        local hum = model:FindFirstChild("Humanoid")
+        return hum and hum.DisplayName
+    end)
+    if ok and type(name) == "string" and name ~= "" then return name end
+    return CleanName(model.Name)
+end
+
 local AnimCache, AnimCacheN = {}, 0
 local AnimatorCache, AnimatorCacheN = {}, 0
 
@@ -140,7 +171,7 @@ local function BuildEntry(model)
     local hrp = model:FindFirstChild("HumanoidRootPart")
     local animator = hrp and GetAnimatorAddr(model)
     if not animator then return nil end
-    local name = CleanName(model.Name)
+    local name = CharacterLabel(model)
     return {
         model = model,
         name = name,
@@ -148,22 +179,17 @@ local function BuildEntry(model)
         key = tostring(model.Address),
         hrp = hrp,
         animator = animator,
-        isPlayer = Players:FindFirstChild(name) ~= nil,
+        isPlayer = model.Name == OTHER_MODEL,
         skipUntil = 0,
     }
 end
 
 local function RefreshEnemies(now)
     local list, nextCache = {}, {}
-    local lp = Players.LocalPlayer
-    LocalHRP = lp and lp.Character and lp.Character:FindFirstChild("HumanoidRootPart") or nil
+    local me = MyCharacter()
+    LocalHRP = me and me:FindFirstChild("HumanoidRootPart") or nil
 
-    local live = workspace:FindFirstChild("Characters")
-    if not live then Enemies, EnemyCache = list, nextCache return end
-
-    local myName = lp and lp.Name
-
-    for _, model in ipairs(live:GetChildren()) do
+    for _, model in ipairs(OtherCharacters()) do
         local addr = model.Address
         local cached = EnemyCache[addr]
         if cached and cached.dead and now < cached.retryAt then
@@ -172,7 +198,7 @@ local function RefreshEnemies(now)
             local entry = (cached and not cached.dead and not cached.stale) and cached or BuildEntry(model)
             if entry then
                 nextCache[addr] = entry
-                if entry.name ~= myName then list[#list + 1] = entry end
+                list[#list + 1] = entry
             else
                 nextCache[addr] = {dead = true, retryAt = now + 3}
             end
@@ -662,7 +688,6 @@ do
         Keybind = "None", -- click the key box to bind a key that flips this
     }))
     Reg("sb_parry_players", parrySec:AddToggle({ Name = "Auto Parry Players", Default = true, Flag = "sb_parry_players" }))
-    Reg("sb_parry_npcs", parrySec:AddToggle({ Name = "Auto Parry NPCs", Default = true, Flag = "sb_parry_npcs" }))
     Reg("sb_parry_chance", parrySec:AddSlider({
         Name = "Parry Chance",
         Min = 1, Max = 100, Default = 100, Suffix = "%",
@@ -936,7 +961,7 @@ end
 do
     local espSec = visualsTab:CreateSection({ Name = "ESP", Side = "Left" })
     Reg("esp_enabled", espSec:AddToggle({ Name = "Enabled", Default = true, Flag = "esp_enabled" }))
-    -- every other player under workspace.Characters
+    -- every other player ("Player" models in workspace)
     Reg("esp_player", espSec:AddToggle({ Name = "Players", Default = false, Flag = "esp_player" }))
         :AddColorPicker({ Default = Color3.fromRGB(255, 80, 80), Flag = "esp_player_color" })
     Reg("esp_self", espSec:AddToggle({ Name = "Self", Default = false, Flag = "esp_self" }))
@@ -1150,32 +1175,26 @@ do
 
     local function refreshTargets()
         local seen = {}
-        local live = workspace:FindFirstChild("Characters")
-        local lp = Players.LocalPlayer
-        local myName = lp and lp.Name
-        if live then
-            for _, model in ipairs(live:GetChildren()) do
-                local nm = model.Name
-                -- other players (Player ESP) and yourself (Self ESP)
-                local kindName = nil
-                if nm == myName then
-                    if Get("esp_self") then kindName = "self" end
-                elseif Get("esp_player") and Players:FindFirstChild(nm) then
-                    kindName = "player"
-                end
-                if kindName then
-                    local rec = recs[model]
-                    if not rec then
-                        local hrp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
-                        if hrp then
-                            rec = { kind = kindName, part = hrp, hum = getHumanoid(model), name = nm,
-                                    display = DisplayName(nm), entry = newEntry() }
-                            recs[model] = rec
-                        end
-                    end
-                    if rec then seen[model] = true end
+        -- other players (Player ESP) and yourself (Self ESP)
+        local targets = {}
+        if Get("esp_player") then
+            for _, model in ipairs(OtherCharacters()) do targets[#targets + 1] = { model, "player" } end
+        end
+        local me = Get("esp_self") and MyCharacter()
+        if me then targets[#targets + 1] = { me, "self" } end
+        for _, t in ipairs(targets) do
+            local model, kindName = t[1], t[2]
+            local rec = recs[model]
+            if not rec then
+                local hrp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+                if hrp then
+                    local label = CharacterLabel(model)
+                    rec = { kind = kindName, part = hrp, hum = getHumanoid(model), name = label,
+                            display = label, entry = newEntry() }
+                    recs[model] = rec
                 end
             end
+            if rec then seen[model] = true end
         end
         for model, rec in pairs(recs) do
             if not seen[model] then
@@ -1426,8 +1445,7 @@ do
         hideRing(rings.track)
     end
     local function drawRings(wantRange, wantTrack)
-        local lp = Players.LocalPlayer
-        local char = lp and lp.Character
+        local char = MyCharacter()
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         local okp, pos = pcall(function() return hrp and hrp.Position end)
         if not okp or not pos then return hideRings() end
@@ -2160,7 +2178,7 @@ local function ScanStep(now)
         Feint.PruneTo(Enemies) -- enemies that left (or respawned as a new model) lose their state + listeners
     end
 
-    local doPlayers, doNpcs = cPlayers.Value, cNpcs.Value
+    local doPlayers, doNpcs = cPlayers.Value, cNpcs and cNpcs.Value
     local useGeneral = cGeneral.Value
     local generalRange = cRange.Value or 20
     -- enemies further than the Tracking Range are skipped without reading their animations (so nothing is
