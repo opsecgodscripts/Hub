@@ -383,9 +383,25 @@ local PLACEHOLDER_IDS = { ["1"] = true } -- the "rbxassetid://1" entries waiting
 local function Normalize(spec)
     if type(spec) == "number" then spec = { pbs = { spec } } end
     if type(spec) ~= "table" then return nil end
-    local times = spec.pbs or spec.t
-    if type(times) == "number" then times = { times } end
-    if type(times) ~= "table" then return nil end
+    -- timings: t = 0.4, t = { 0.3, 0.6 }, pbs = { ... }, and also t = 0.3, 0.6 (Lua stores the extra numbers
+    -- in the entry's list part, so they're picked up from there)
+    local times = {}
+    local function addTimes(v)
+        if type(v) == "number" then
+            times[#times + 1] = v
+        elseif type(v) == "table" then
+            for _, x in ipairs(v) do
+                if type(x) == "number" then times[#times + 1] = x end
+            end
+        end
+    end
+    addTimes(spec.pbs)
+    addTimes(spec.t)
+    for _, x in ipairs(spec) do
+        if type(x) == "number" then times[#times + 1] = x end
+    end
+    if #times == 0 then return nil end
+    table.sort(times)
     local kind = string.lower(tostring(spec.type or "parry"))
     if spec.unparryable and kind ~= "dodge" then kind = "unparryable" end
     local actions = {}
@@ -2267,7 +2283,8 @@ local function FireDue()
                 fire, tag = true, " (feint)"
             end
 
-            if feinted and Get("print_feints") then
+            -- shown with Print Parries too, so a skipped press is never silent
+            if feinted and (Get("print_feints") or Get("print_parries")) then
                 local okN, nm = pcall(function() return q.model.Name end)
                 local why = ev
                     and string.format("feint #%d (%s) published %.0fms after the animation started", ev.seq, ev.via, (ev.at - q.startAt) * 1000)
