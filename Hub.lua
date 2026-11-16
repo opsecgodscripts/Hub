@@ -15,6 +15,9 @@ local GAMES = {
 	Plenilune = {
 		18563654875,
 	},
+	DuelingGrounds = {
+		94217045453265,
+	},
 	-- Deepwoken = { -- add Deepwoken's ids here once Deepwoken/Main has a script
 	-- 	1234567890,
 	-- 	1234567891,

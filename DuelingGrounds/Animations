@@ -1,0 +1,4 @@
+return {
+    -- // ClassName \\ --
+    -- ["rbxassetid://123456789"] = { name = "M1", range = 20, pbs = {0.4} },
+}
