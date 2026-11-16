@@ -320,6 +320,7 @@ local NO_CATEGORY = "Ungrouped"
 local Active      = {}
 local Queue       = {}
 local Status      = {loaded = 0, ignored = 0, tracked = 0, last = "none", lastDist = 0, loopMs = 0, scanMs = 0, ping = 0, feint = "-"}
+local AnimCfg     = {} -- per-animation settings + facing check (filled in below the animation data)
 
 local function Log(msg) print(LOG_TAG .. " " .. tostring(msg)) end
 
@@ -416,7 +417,13 @@ local function LoadData()
                     local where = cats[id]
                     local move = type(spec) == "table" and spec.name and tostring(spec.name) or id
                     local label = where and (where.cat .. (where.sub and (" " .. where.sub) or "") .. " " .. move) or move
-                    AnimDB[id] = { name = label, actions = actions, range = range, cat = where and where.cat or NO_CATEGORY }
+                    local times = {}
+                    for _, a in ipairs(actions) do times[#times + 1] = a.t end
+                    AnimDB[id] = {
+                        name = label, actions = actions, range = range, cat = where and where.cat or NO_CATEGORY,
+                        -- what the file says; your Config changes are laid on top of this (AnimCfg.ApplyOne)
+                        base = { kind = actions[1].kind, times = times, range = range, facing = AnimCfg.FacingOf(spec) },
+                    }
                     if range and range > AnimMaxRange then AnimMaxRange = range end
                     n = n + 1
                 else
@@ -432,10 +439,13 @@ local function LoadData()
         Log("Failed to download the animation file: " .. ANIM_URL)
     end
 
+    AnimCfg.ApplyAll()
+
     -- names for UiLibrary's built-in Animation Tracker (UI tab)
     local names = {}
     for id, info in pairs(AnimDB) do names[id] = info.name end
     Library.AnimationNames = names
+    if AnimCfg.RefreshUI then pcall(AnimCfg.RefreshUI) end
 
     -- class list for the Debug tab's print dropdown
     local seenCat = {}
@@ -448,6 +458,107 @@ local function LoadData()
     table.sort(AnimCategories, function(x, y) return string.lower(x) < string.lower(y) end)
     if RefreshCategoryOptions then pcall(RefreshCategoryOptions) end
 end
+
+-- PER-ANIMATION SETTINGS + FACING CHECK
+-- Each animation has: on/off, type (parry = F, dodge = Q), direction, timings, range and a timing offset.
+-- The animation file sets the starting values (it can also say facing = "AOE" or facing = "Backwards");
+-- what you change in Auto Parry > Config is kept in AnimCfg.File and laid on top every time the file loads.
+-- Direction: "Facing" = the enemy has to look at you (within Facing Angle), "AOE" = hits all around (no check),
+-- "Backwards" = the hitbox is behind them, so you have to be behind them.
+AnimCfg.File = GAME_NAME .. "_AnimConfig.json"
+AnimCfg.Overrides = {} -- id -> { enabled, kind, facing, times, range, offset }
+AnimCfg.Directions = { "Facing", "AOE", "Backwards" }
+
+function AnimCfg.FacingOf(spec)
+    local v = type(spec) == "table" and string.lower(tostring(spec.facing or spec.direction or "")) or ""
+    if v == "aoe" then return "AOE" end
+    if v == "backwards" or v == "back" or v == "behind" then return "Backwards" end
+    return "Facing"
+end
+
+function AnimCfg.Load()
+    AnimCfg.Overrides = {}
+    if type(readfile) ~= "function" then return end
+    local ok, data = pcall(function()
+        if type(isfile) == "function" and not isfile(AnimCfg.File) then return nil end
+        return game:GetService("HttpService"):JSONDecode(readfile(AnimCfg.File))
+    end)
+    if ok and type(data) == "table" then AnimCfg.Overrides = data end
+end
+
+-- written a second after the last change (sliders change many times while dragged)
+function AnimCfg.MarkDirty()
+    AnimCfg.dirtyAt = os.clock()
+end
+
+function AnimCfg.SaveIfDirty(now)
+    if not AnimCfg.dirtyAt or now - AnimCfg.dirtyAt < 1 then return end
+    AnimCfg.dirtyAt = nil
+    if type(writefile) ~= "function" then return end
+    pcall(function() writefile(AnimCfg.File, game:GetService("HttpService"):JSONEncode(AnimCfg.Overrides)) end)
+end
+
+-- rebuilds one animation from what the file said (info.base) plus your changes
+function AnimCfg.ApplyOne(id)
+    local info = AnimDB[id]
+    if not info or not info.base then return end
+    local base, o = info.base, AnimCfg.Overrides[id] or {}
+    local kind = o.kind or base.kind
+    local actions = {}
+    for _, t in ipairs(o.times or base.times) do
+        if type(t) == "number" then actions[#actions + 1] = { kind = kind, t = t } end
+    end
+    info.actions = actions
+    info.kind = kind
+    info.range = tonumber(o.range) or base.range
+    info.facing = o.facing or base.facing
+    info.enabled = o.enabled ~= false
+    info.offset = tonumber(o.offset) or 0
+end
+
+function AnimCfg.ApplyAll()
+    AnimMaxRange = 0
+    for id, info in pairs(AnimDB) do
+        AnimCfg.ApplyOne(id)
+        if info.range and info.range > AnimMaxRange then AnimMaxRange = info.range end
+    end
+end
+
+function AnimCfg.Set(id, key, value)
+    if not AnimDB[id] then return end
+    local o = AnimCfg.Overrides[id] or {}
+    o[key] = value
+    AnimCfg.Overrides[id] = o
+    AnimCfg.ApplyOne(id)
+    AnimCfg.MarkDirty()
+end
+
+function AnimCfg.Reset(id)
+    AnimCfg.Overrides[id] = nil
+    AnimCfg.ApplyOne(id)
+    AnimCfg.MarkDirty()
+end
+
+-- may this action fire, given where the enemy is looking? Unknown positions never block it.
+function AnimCfg.FacingOk(enemy, info)
+    if not Get("ap_facing_check") then return true end
+    local mode = info and info.facing or "Facing"
+    if mode == "AOE" or not LocalHRP or not enemy or not enemy.hrp then return true end
+    local ok, ex, _, ez, _, _, r02, _, _, _, _, _, r22 = pcall(function() return enemy.hrp.CFrame:GetComponents() end)
+    local okMe, me = pcall(function() return LocalHRP.Position end)
+    if not ok or not okMe or type(r02) ~= "number" then return true end
+    -- flat (top-down) angle between where they look and where you are
+    local dx, dz = me.X - ex, me.Z - ez
+    local lx, lz = -r02, -r22
+    local len = math.sqrt(dx * dx + dz * dz) * math.sqrt(lx * lx + lz * lz)
+    if len < 1e-6 then return true end
+    local cos = math.max(-1, math.min(1, (dx * lx + dz * lz) / len))
+    local angle = math.deg(math.acos(cos))
+    if mode == "Backwards" then angle = 180 - angle end
+    return angle <= (Get("ap_facing_angle") or 70)
+end
+
+AnimCfg.Load()
 
 -- IGNORED ANIMS
 local IgnoredIds = {}
@@ -696,6 +807,172 @@ do
         Flag = "sb_dodge_cooldown",
     }))
     chanceSlider:SetVisible(not prioToggle.Value)
+
+    -- CONFIG: facing settings and per-animation tweaks
+    local config = mainTab:CreateMultiSection({ Side = "Right" })
+    local editSec = config:AddSection("Config")
+    local facingSec = config:AddSection("Facing")
+
+    -- Facing: an animation only fires while the enemy looks at you (AOE / Backwards animations change this)
+    Reg("ap_facing_check", facingSec:AddToggle({ Name = "Require Facing", Default = true, Flag = "ap_facing_check" }))
+    Reg("ap_facing_angle", facingSec:AddSlider({
+        Name = "Facing Angle",
+        Min = 10, Max = 180, Increment = 5, Default = 70, Suffix = " deg",
+        Flag = "ap_facing_angle",
+    }))
+    facingSec:AddLabel("How far off they can look and still hit you. AOE animations skip the check; Backwards ones need you behind them.")
+
+    -- Config: pick a class and an animation, then change it. Saved in its own file, not in configs.
+    local cfg = { labels = {} } -- labels: dropdown label -> animation id
+    local classDD, animDD, idStatus, enabledT, typeDD, dirDD, timesBox, rangeSlider, offsetSlider
+
+    local function ClassNames()
+        local seen, list = {}, {}
+        for _, info in pairs(AnimDB) do
+            if not seen[info.cat] then seen[info.cat] = true list[#list + 1] = info.cat end
+        end
+        table.sort(list, function(a, b) return string.lower(a) < string.lower(b) end)
+        if #list == 0 then list[1] = "None" end
+        return list
+    end
+
+    -- "Fist M1" for "Elphael Fist M1"; the id is added when two moves share a name
+    local function AnimLabels(cat)
+        local ids = {}
+        for id, info in pairs(AnimDB) do
+            if info.cat == cat then ids[#ids + 1] = id end
+        end
+        local function short(id)
+            local name = AnimDB[id].name or id
+            if name:sub(1, #cat + 1) == cat .. " " then name = name:sub(#cat + 2) end
+            return name
+        end
+        table.sort(ids, function(a, b)
+            local ka = string.lower(short(a)):gsub("%d+", function(d) return string.format("%08d", tonumber(d)) end)
+            local kb = string.lower(short(b)):gsub("%d+", function(d) return string.format("%08d", tonumber(d)) end)
+            if ka ~= kb then return ka < kb end
+            return a < b
+        end)
+        local count, labels, map = {}, {}, {}
+        for _, id in ipairs(ids) do count[short(id)] = (count[short(id)] or 0) + 1 end
+        for _, id in ipairs(ids) do
+            local label = short(id)
+            if count[label] > 1 then label = label .. " (" .. id .. ")" end
+            labels[#labels + 1] = label
+            map[label] = id
+        end
+        if #labels == 0 then labels[1] = "None" end
+        return labels, map
+    end
+
+    local function TimesText(info)
+        local parts = {}
+        for _, a in ipairs(info.actions) do parts[#parts + 1] = tostring(a.t) end
+        return table.concat(parts, ", ")
+    end
+
+    -- shows the picked animation's values (without firing the controls' callbacks)
+    local function ShowSelected()
+        local info = cfg.id and AnimDB[cfg.id]
+        local editors = { enabledT, typeDD, dirDD, timesBox, rangeSlider, offsetSlider }
+        for _, c in ipairs(editors) do c:SetVisible(info ~= nil) end
+        if not info then
+            idStatus:Set("-")
+            return
+        end
+        idStatus:Set(cfg.id)
+        enabledT:Set(info.enabled ~= false, true)
+        typeDD:Set(info.kind == "parry" and "Parry" or "Dodge", true)
+        dirDD:Set(info.facing or "Facing", true)
+        timesBox:Set(TimesText(info), true)
+        rangeSlider:Set(info.range or DEFAULT_ANIM_RANGE, true)
+        offsetSlider:Set(info.offset or 0, true)
+    end
+
+    local function PickAnimation(label)
+        cfg.id = cfg.labels[label]
+        ShowSelected()
+    end
+
+    local function PickClass(cat)
+        local labels, map = AnimLabels(cat)
+        cfg.labels = map
+        ReplaceOptions(animDD, labels, labels[1])
+        PickAnimation(labels[1])
+    end
+
+    classDD = editSec:AddDropdown({ Name = "Class", Options = { "None" }, Default = "None", Callback = PickClass })
+    animDD = editSec:AddDropdown({ Name = "Animation", Options = { "None" }, Default = "None", Callback = PickAnimation })
+    idStatus = editSec:AddStatus("ID", "-")
+    enabledT = editSec:AddToggle({
+        Name = "Parry This Animation",
+        Default = true,
+        Callback = function(on) if cfg.id then AnimCfg.Set(cfg.id, "enabled", on) end end,
+    })
+    typeDD = editSec:AddDropdown({
+        Name = "Type",
+        Options = { "Parry", "Dodge" },
+        Default = "Parry",
+        Callback = function(v) if cfg.id then AnimCfg.Set(cfg.id, "kind", v == "Dodge" and "dodge" or "parry") end end,
+    })
+    dirDD = editSec:AddDropdown({
+        Name = "Direction",
+        Options = AnimCfg.Directions,
+        Default = "Facing",
+        Callback = function(v) if cfg.id then AnimCfg.Set(cfg.id, "facing", v) end end,
+    })
+    -- seconds after the animation starts, several separated by commas
+    timesBox = editSec:AddTextbox({
+        Name = "Timings (seconds)",
+        Placeholder = "0.4, 0.8",
+        Callback = function(text)
+            if not cfg.id then return end
+            local times = {}
+            for n in tostring(text):gmatch("[%d%.]+") do
+                local t = tonumber(n)
+                if t then times[#times + 1] = t end
+            end
+            if #times > 0 then
+                table.sort(times)
+                AnimCfg.Set(cfg.id, "times", times)
+            else
+                Window:Notify("Config", "Type at least one timing, like 0.4", 3)
+            end
+            ShowSelected()
+        end,
+    })
+    -- used while Use General Range is off
+    rangeSlider = editSec:AddSlider({
+        Name = "Range",
+        Min = 1, Max = 200, Default = DEFAULT_ANIM_RANGE, Suffix = " studs",
+        Callback = function(v) if cfg.id then AnimCfg.Set(cfg.id, "range", v) end end,
+    })
+    -- moves every timing of this animation earlier (-) or later (+)
+    offsetSlider = editSec:AddSlider({
+        Name = "Timing Offset",
+        Min = -300, Max = 300, Increment = 5, Default = 0, Suffix = "ms",
+        Callback = function(v) if cfg.id then AnimCfg.Set(cfg.id, "offset", v) end end,
+    })
+    editSec:AddButton({
+        Name = "Reset This Animation",
+        Callback = function()
+            if not cfg.id then return end
+            AnimCfg.Reset(cfg.id)
+            ShowSelected()
+            Window:Notify("Config", "Back to the animation file's values", 2)
+        end,
+    })
+
+    -- called after the animation file (re)loads
+    AnimCfg.RefreshUI = function()
+        local classes = ClassNames()
+        local keep = classDD.Value
+        local pick = classes[1]
+        for _, c in ipairs(classes) do if c == keep then pick = c break end end
+        ReplaceOptions(classDD, classes, pick)
+        PickClass(pick)
+    end
+    ShowSelected()
 end
 
 -- VISUALS TAB
@@ -2381,7 +2658,7 @@ local function Schedule(startTime, info, akey, model, id, fst, enemy)
     local now   = os.clock()
 
     for _, action in ipairs(info.actions) do
-        local base = startTime + action.t
+        local base = startTime + action.t + (info.offset or 0) / 1000
         if base >= now - 0.1 then
             local at = base + ((delay - ping) / 1000)
             local entry = {
@@ -2432,11 +2709,16 @@ local function FireDue()
           local animRange = Get("sb_use_general_range") and (Get("sb_range") or 20)
               or (q.info and q.info.range) or DEFAULT_ANIM_RANGE
           local outRange = q.enemy and Dist(q.enemy) > animRange
-          if outRange then
+          -- the enemy has to be looking at you (AOE: anywhere, Backwards: you behind them) when it is due
+          local turned = not outRange and q.enemy and not AnimCfg.FacingOk(q.enemy, q.info)
+          if outRange or turned then
             if Get("print_parries") then
                 local okN, nm = pcall(function() return q.model.Name end)
-                Log(string.format("Skipped %s@%.3f | %s | %s | enemy %.1f studs away, outside the %.0f stud range",
-                    q.kind, q.actionT or 0, okN and DisplayName(nm) or "?", AnimNameId(q.id), Dist(q.enemy), animRange))
+                local why = outRange
+                    and string.format("enemy %.1f studs away, outside the %.0f stud range", Dist(q.enemy), animRange)
+                    or ("enemy not facing you (" .. tostring(q.info and q.info.facing or "Facing") .. ")")
+                Log(string.format("Skipped %s@%.3f | %s | %s | %s",
+                    q.kind, q.actionT or 0, okN and DisplayName(nm) or "?", AnimNameId(q.id), why))
             end
           else
             local ev = nil
@@ -2517,7 +2799,7 @@ local function ScanStep(now)
                 for _, anim in ipairs(GetPlayingAnims(enemy)) do
                     local id   = anim.id
                     local info = AnimDB[id]
-                    if info then
+                    if info and info.enabled ~= false then
                         if fs and now + 0.25 > fs.animUntil then fs.animUntil = now + 0.25 end -- keeps the fallback poll on this enemy
                         local akey = enemy.key .. "|" .. id
                         tracked = tracked + 1
@@ -2594,6 +2876,7 @@ end)
 Window:OnDestroy(function()
     for _, r in ipairs(Releases) do pcall(keyrelease, r.vk) end
     Releases = {}
+    if AnimCfg.dirtyAt then AnimCfg.dirtyAt = -math.huge AnimCfg.SaveIfDirty(os.clock()) end
     Queue, Active, Tracked, TrackedCount = {}, {}, {}, 0
     -- disconnect every feint listener
     pcall(function() Combat.Feint.Clear() end)
@@ -2612,6 +2895,7 @@ task.spawn(function()
             Status.loopMs = Status.loopMs * 0.8 + (now - lastLoop) * 1000 * 0.2
         end
         lastLoop = now
+        AnimCfg.SaveIfDirty(now)
 
         if #Releases > 0 then
             for i = #Releases, 1, -1 do
