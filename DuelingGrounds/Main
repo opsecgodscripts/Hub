@@ -118,6 +118,8 @@ end
 -- The names are the same for everyone, so models are told apart by their Address. R6 and R15 both have a
 -- HumanoidRootPart and Humanoid > Animator, which is all that is read from them.
 local SELF_MODEL, OTHER_MODEL = "Player_Client", "Player"
+-- NPCs straight in workspace that auto parry also watches (needs "Auto Parry NPCs" on). Add more names here.
+local NPC_MODELS = { MiniBoss_Jack = true }
 
 local function MyCharacter()
     local me = workspace:FindFirstChild(SELF_MODEL)
@@ -130,6 +132,16 @@ local function OtherCharacters()
     local list = {}
     for _, model in ipairs(workspace:GetChildren()) do
         if model.Name == OTHER_MODEL then list[#list + 1] = model end
+    end
+    return list
+end
+
+-- everyone auto parry watches: other players and the NPC_MODELS
+local function WatchedCharacters()
+    local list = {}
+    for _, model in ipairs(workspace:GetChildren()) do
+        local name = model.Name
+        if name == OTHER_MODEL or NPC_MODELS[name] then list[#list + 1] = model end
     end
     return list
 end
@@ -189,7 +201,7 @@ local function RefreshEnemies(now)
     local me = MyCharacter()
     LocalHRP = me and me:FindFirstChild("HumanoidRootPart") or nil
 
-    for _, model in ipairs(OtherCharacters()) do
+    for _, model in ipairs(WatchedCharacters()) do
         local addr = model.Address
         local cached = EnemyCache[addr]
         if cached and cached.dead and now < cached.retryAt then
@@ -718,7 +730,7 @@ Window = Library:CreateWindow({
 Library.LocalCharacter = MyCharacter
 Library.ListCharacters = function()
     local list = {}
-    for _, model in ipairs(OtherCharacters()) do list[#list + 1] = { Name = CharacterLabel(model), Model = model } end
+    for _, model in ipairs(WatchedCharacters()) do list[#list + 1] = { Name = CharacterLabel(model), Model = model } end
     return list
 end
 Window:OnDestroy(function()
@@ -744,6 +756,8 @@ do
         Keybind = "None", -- click the key box to bind a key that flips this
     }))
     Reg("sb_parry_players", parrySec:AddToggle({ Name = "Auto Parry Players", Default = true, Flag = "sb_parry_players" }))
+    -- the NPC_MODELS (MiniBoss_Jack, ...)
+    Reg("sb_parry_npcs", parrySec:AddToggle({ Name = "Auto Parry NPCs", Default = true, Flag = "sb_parry_npcs" }))
     Reg("sb_parry_chance", parrySec:AddSlider({
         Name = "Parry Chance",
         Min = 1, Max = 100, Default = 100, Suffix = "%",
