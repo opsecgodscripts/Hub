@@ -417,7 +417,8 @@ local function LoadData()
                     AnimDB[id] = {
                         name = label, actions = actions, range = range, cat = where and where.cat or NO_CATEGORY,
                         -- what the file says; your Config changes are laid on top of this (AnimCfg.ApplyOne)
-                        base = { kind = actions[1].kind, times = times, range = range, facing = AnimCfg.FacingOf(spec) },
+                        base = { kind = actions[1].kind, times = times, range = range, facing = AnimCfg.FacingOf(spec),
+                            angle = type(spec) == "table" and tonumber(spec.angle) or AnimCfg.DefaultAngle },
                     }
                     if range and range > AnimMaxRange then AnimMaxRange = range end
                     n = n + 1
@@ -444,13 +445,16 @@ local function LoadData()
 end
 
 -- PER-ANIMATION SETTINGS + FACING CHECK
--- Each animation has: on/off, type (parry = F, dodge = Q), direction, timings, range and a timing offset.
--- The animation file sets the starting values (it can also say facing = "AOE" or facing = "Backwards");
+-- Each animation has: on/off, type (parry = F, dodge = Q), direction, facing angle, timings, range and a timing
+-- offset. The animation file sets the starting values (it can also say facing = "AOE" / "Backwards" and
+-- angle = 90);
 -- what you change in Auto Parry > Config is kept in AnimCfg.File and laid on top every time the file loads.
--- Direction: "Facing" = the enemy has to look at you (within Facing Angle), "AOE" = hits all around (no check),
--- "Backwards" = the hitbox is behind them, so you have to be behind them.
+-- Direction: "Facing" = the enemy has to look at you (within the animation's Facing Angle), "AOE" = hits all
+-- around (no check), "Backwards" = the hitbox is behind them, so you have to be behind them.
+-- Require Facing (Auto Parry) turns the check off for every animation.
 AnimCfg.File = GAME_NAME .. "_AnimConfig.json"
-AnimCfg.Overrides = {} -- id -> { enabled, kind, facing, times, range, offset }
+AnimCfg.Overrides = {} -- id -> { enabled, kind, facing, angle, times, range, offset }
+AnimCfg.DefaultAngle = 70 -- degrees, for animations that don't set one
 AnimCfg.Directions = { "Facing", "AOE", "Backwards" }
 
 function AnimCfg.FacingOf(spec)
@@ -496,6 +500,7 @@ function AnimCfg.ApplyOne(id)
     info.kind = kind
     info.range = tonumber(o.range) or base.range
     info.facing = o.facing or base.facing
+    info.angle = tonumber(o.angle) or base.angle
     info.enabled = o.enabled ~= false
     info.offset = tonumber(o.offset) or 0
 end
@@ -539,7 +544,7 @@ function AnimCfg.FacingOk(enemy, info)
     local cos = math.max(-1, math.min(1, (dx * lx + dz * lz) / len))
     local angle = math.deg(math.acos(cos))
     if mode == "Backwards" then angle = 180 - angle end
-    return angle <= (Get("ap_facing_angle") or 70)
+    return angle <= (info.angle or AnimCfg.DefaultAngle)
 end
 
 AnimCfg.Load()
@@ -588,7 +593,10 @@ local visualsTab    = Window:CreateTab({ Name = "Visuals", Icon = "*" })
 -- AUTO PARRY TAB
 -- Left: Auto Parry, Range. Right: Ping / Feints / Dodging (one box, click a name to switch).
 do
-    local parrySec = mainTab:CreateSection({ Name = "Auto Parry", Side = "Left" })
+    -- Auto Parry | Config in one box
+    local parryBox = mainTab:CreateMultiSection({ Side = "Left" })
+    local parrySec = parryBox:AddSection("Auto Parry")
+    local editSec = parryBox:AddSection("Config")
     Reg("sb_parry_on", parrySec:AddToggle({
         Name = "Enabled",
         Default = false,
@@ -602,6 +610,9 @@ do
         Min = 1, Max = 100, Default = 100, Suffix = "%",
         Flag = "sb_parry_chance",
     }))
+    -- an animation only fires while the enemy looks at you (each animation's Direction and Facing Angle
+    -- are in Config); off = never check
+    Reg("ap_facing_check", parrySec:AddToggle({ Name = "Require Facing", Default = true, Flag = "ap_facing_check" }))
 
     local rangeSec = mainTab:CreateSection({ Name = "Range", Side = "Left" })
     -- Animations from enemies within this many studs are tracked. They are only parried once the enemy is also
@@ -697,23 +708,9 @@ do
     }))
     chanceSlider:SetVisible(not prioToggle.Value)
 
-    -- CONFIG: facing settings and per-animation tweaks
-    local config = mainTab:CreateMultiSection({ Side = "Right" })
-    local editSec = config:AddSection("Config")
-    local facingSec = config:AddSection("Facing")
-
-    -- Facing: an animation only fires while the enemy looks at you (AOE / Backwards animations change this)
-    Reg("ap_facing_check", facingSec:AddToggle({ Name = "Require Facing", Default = true, Flag = "ap_facing_check" }))
-    Reg("ap_facing_angle", facingSec:AddSlider({
-        Name = "Facing Angle",
-        Min = 10, Max = 180, Increment = 5, Default = 70, Suffix = " deg",
-        Flag = "ap_facing_angle",
-    }))
-    facingSec:AddLabel("How far off they can look and still hit you. AOE animations skip the check; Backwards ones need you behind them.")
-
     -- Config: pick a class and an animation, then change it. Saved in its own file, not in configs.
     local cfg = { labels = {} } -- labels: dropdown label -> animation id
-    local classDD, animDD, idStatus, enabledT, typeDD, dirDD, timesBox, rangeSlider, offsetSlider
+    local classDD, animDD, idStatus, enabledT, typeDD, dirDD, angleSlider, timesBox, rangeSlider, offsetSlider
 
     local function ClassNames()
         local seen, list = {}, {}
@@ -763,8 +760,9 @@ do
     -- shows the picked animation's values (without firing the controls' callbacks)
     local function ShowSelected()
         local info = cfg.id and AnimDB[cfg.id]
-        local editors = { enabledT, typeDD, dirDD, timesBox, rangeSlider, offsetSlider }
+        local editors = { enabledT, typeDD, dirDD, angleSlider, timesBox, rangeSlider, offsetSlider }
         for _, c in ipairs(editors) do c:SetVisible(info ~= nil) end
+        -- AOE has no facing check, so no angle
         if not info then
             idStatus:Set("-")
             return
@@ -773,6 +771,8 @@ do
         enabledT:Set(info.enabled ~= false, true)
         typeDD:Set(info.kind == "parry" and "Parry" or "Dodge", true)
         dirDD:Set(info.facing or "Facing", true)
+        angleSlider:Set(info.angle or AnimCfg.DefaultAngle, true)
+        angleSlider:SetVisible(info.facing ~= "AOE")
         timesBox:Set(TimesText(info), true)
         rangeSlider:Set(info.range or DEFAULT_ANIM_RANGE, true)
         offsetSlider:Set(info.offset or 0, true)
@@ -808,7 +808,16 @@ do
         Name = "Direction",
         Options = AnimCfg.Directions,
         Default = "Facing",
-        Callback = function(v) if cfg.id then AnimCfg.Set(cfg.id, "facing", v) end end,
+        Callback = function(v)
+            if cfg.id then AnimCfg.Set(cfg.id, "facing", v) end
+            angleSlider:SetVisible(v ~= "AOE")
+        end,
+    })
+    -- how far off the enemy can look (Facing) or how far off you can be from straight behind them (Backwards)
+    angleSlider = editSec:AddSlider({
+        Name = "Facing Angle",
+        Min = 10, Max = 180, Increment = 5, Default = AnimCfg.DefaultAngle, Suffix = " deg",
+        Callback = function(v) if cfg.id then AnimCfg.Set(cfg.id, "angle", v) end end,
     })
     -- seconds after the animation starts, several separated by commas
     timesBox = editSec:AddTextbox({
