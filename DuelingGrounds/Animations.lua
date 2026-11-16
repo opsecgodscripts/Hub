@@ -34,9 +34,12 @@ return {
         angle = 70,     
         type = "parry",  
 
-        JackBomb = { id = "114813595215444", t = 1, range = 50 },
-    },
+        JackBomb = { id = "114813595215444", t = 1, range = 50, type = "dodge" },
+},
 
+
+
+    
 
     
 }
