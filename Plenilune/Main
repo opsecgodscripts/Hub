@@ -445,16 +445,26 @@ local function LoadData()
     local src = HttpGet(ANIM_URL .. "?v=" .. tostring(os.time and os.time() or 0))
     local data
     if src then
-        local fn, compileErr = loadstring(src)
-        if fn then
-            local ok, res = pcall(fn)
+        -- Matcha can drop the value a loadstring chunk returns, so the file runs inside a function and
+        -- hands its table over through a global instead
+        local key = "__AnimData_" .. GAME_NAME
+        local wrapped = "local __f = function()\n" .. src .. "\nend\n_G[\"" .. key .. "\"] = __f()"
+        _G[key] = nil
+        local fn, compileErr = loadstring(wrapped)
+        if not fn then
+            fn, compileErr = loadstring(src) -- show the error against the file itself
+            Log("The animation file has a syntax error: " .. tostring(compileErr))
+        else
+            local ok, err = pcall(fn)
+            local res = _G[key]
+            _G[key] = nil
             if ok and type(res) == "table" then
                 data = res
+            elseif not ok then
+                Log("The animation file errored when run: " .. tostring(err))
             else
-                Log("The animation file errored when run: " .. tostring(res))
+                Log("The animation file didn't return a table (it should start with return { ... })")
             end
-        else
-            Log("The animation file has a syntax error: " .. tostring(compileErr))
         end
     end
 
