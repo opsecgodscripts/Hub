@@ -338,9 +338,16 @@ local function AnimNameId(id)
 end
 
 -- ANIMATION DATA
--- Plenilune/Animations returns a table of entries:
---   ["rbxassetid://123"] = { name = "M1", range = 20, pbs = { 0.4 } }
--- pbs: parry timings, in seconds after the animation starts (t = { ... } works too).
+-- Plenilune/Animations returns a table. Two layouts, which can be mixed:
+--   ["rbxassetid://123"] = { name = "M1", range = 20, pbs = { 0.4 } }            (one entry per animation)
+--   Fist = {                                                                     (a group of named moves)
+--       range = 20,
+--       M1 = { id = "125094062025381", type = "parry", t = 0.225 },
+--       Crit = { id = "71289364417188", t = 0.4 },
+--   },
+-- A group's range / type / facing / angle are the defaults for the moves inside it; groups can be nested
+-- (Elphael = { Fist = { ... } }). The top group is the class shown in Config: "Fist M1".
+-- pbs / t: parry timings, in seconds after the animation starts (one number or a list).
 -- type = "dodge" presses Q for that move instead of F; unparryable = true always dodges.
 -- range: base distance in studs, used while "Use General Range" is off (DEFAULT_ANIM_RANGE if missing).
 -- Categories come from the comment headers in the file: "-- // Catalyst \\ --" starts one, and a plain
@@ -363,6 +370,50 @@ local function Normalize(spec)
     return #actions > 0 and actions or nil, tonumber(spec.range)
 end
 
+-- keys that are an animation id themselves: [123], ["123"], ["rbxassetid://123"]
+local function IsIdKey(key)
+    if type(key) == "number" then return true end
+    return type(key) == "string" and (key:match("^%s*%d+%s*$") or key:match("^%s*rbxassetid://%d+%s*$")) ~= nil
+end
+
+-- settings a group passes down to its moves
+local GROUP_FIELDS = { range = true, type = true, facing = true, direction = true, angle = true, unparryable = true }
+
+-- every animation in the file as { id, spec, name, cat }
+local function Collect(tbl, out, path, cat, defaults)
+    local function withDefaults(value)
+        if type(value) ~= "table" then return value end
+        local spec = {}
+        for k, v in pairs(defaults) do spec[k] = v end
+        for k, v in pairs(value) do spec[k] = v end
+        return spec
+    end
+    for key, value in pairs(tbl) do
+        if IsIdKey(key) then
+            local named = type(value) == "table" and value.name and tostring(value.name)
+            out[#out + 1] = { id = CleanId(key), spec = withDefaults(value), cat = cat,
+                name = named and (path .. named) or (path ~= "" and (path .. CleanId(key)) or nil) }
+        elseif type(key) == "string" and type(value) == "table" and not GROUP_FIELDS[key] then
+            if value.id ~= nil then
+                -- a named move: M1 = { id = "123", t = 0.4 } (id can also be a list of ids)
+                local ids = type(value.id) == "table" and value.id or { value.id }
+                for _, raw in ipairs(ids) do
+                    local id = CleanId(raw)
+                    if id then out[#out + 1] = { id = id, spec = withDefaults(value), cat = cat, name = path .. key } end
+                end
+            else
+                -- a group: its own range / type / facing / angle become the defaults inside it
+                local inner = {}
+                for k, v in pairs(defaults) do inner[k] = v end
+                for k in pairs(GROUP_FIELDS) do
+                    if value[k] ~= nil then inner[k] = value[k] end
+                end
+                Collect(value, out, path .. key .. " ", cat or key, inner)
+            end
+        end
+    end
+end
+
 -- animation id -> { cat = "Elphael", sub = "Fist" } from the comment headers of the data file
 local function ReadCategories(src)
     local map, cat, sub = {}, nil, nil
@@ -375,7 +426,7 @@ local function ReadCategories(src)
             if subName and cat then
                 sub = subName
             elseif not line:match("^%s*%-%-") then
-                local id = line:match("rbxassetid://(%d+)")
+                local id = line:match("rbxassetid://(%d+)") or line:match("[%s{,]id%s*=%s*[\"']?(%d+)")
                 if id and cat and not map[id] then map[id] = { cat = cat, sub = sub } end
             end
         end
@@ -409,18 +460,23 @@ local function LoadData()
     if data then
         local cats = ReadCategories(src)
         local n = 0
-        for key, spec in pairs(data) do
-            local id = CleanId(key)
+        local entries = {}
+        Collect(data, entries, "", nil, {})
+        for _, e in ipairs(entries) do
+            local id, spec = e.id, e.spec
             if id and not PLACEHOLDER_IDS[id] then
                 local actions, range = Normalize(spec)
                 if actions then
                     local where = cats[id]
-                    local move = type(spec) == "table" and spec.name and tostring(spec.name) or id
-                    local label = where and (where.cat .. (where.sub and (" " .. where.sub) or "") .. " " .. move) or move
+                    local move = e.name or (type(spec) == "table" and spec.name and tostring(spec.name)) or id
+                    local label = move
+                    if where and move:sub(1, #where.cat + 1) ~= where.cat .. " " then
+                        label = where.cat .. (where.sub and (" " .. where.sub) or "") .. " " .. move
+                    end
                     local times = {}
                     for _, a in ipairs(actions) do times[#times + 1] = a.t end
                     AnimDB[id] = {
-                        name = label, actions = actions, range = range, cat = where and where.cat or NO_CATEGORY,
+                        name = label, actions = actions, range = range, cat = where and where.cat or e.cat or NO_CATEGORY,
                         -- what the file says; your Config changes are laid on top of this (AnimCfg.ApplyOne)
                         base = { kind = actions[1].kind, times = times, range = range, facing = AnimCfg.FacingOf(spec),
                             angle = type(spec) == "table" and tonumber(spec.angle) or AnimCfg.DefaultAngle },
@@ -428,7 +484,7 @@ local function LoadData()
                     if range and range > AnimMaxRange then AnimMaxRange = range end
                     n = n + 1
                 else
-                    Log("Skipped " .. tostring(key) .. " (no timings)")
+                    Log("Skipped " .. tostring(e.name or id) .. " (no timings)")
                 end
             end
         end
