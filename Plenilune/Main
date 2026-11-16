@@ -26,7 +26,8 @@ local HIST_SLOTS = 10
 local UI_URL = "https://raw.githubusercontent.com/opsecgodscripts/UiLibrary/refs/heads/main/UiLibrary/Library.lua"
 local Library, Window
 do
-    local okHttp, source = pcall(function() return game:HttpGet(UI_URL) end)
+    -- "?t=..." skips GitHub's cache, which can hand out an old copy for a few minutes after a push
+    local okHttp, source = pcall(function() return game:HttpGet(UI_URL .. "?t=" .. tostring(os.time())) end)
     if not okHttp or type(source) ~= "string" or #source < 100 then
         warn(LOG_TAG .. " UiLibrary download failed: " .. tostring(source))
         return
