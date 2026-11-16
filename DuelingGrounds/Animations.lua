@@ -29,8 +29,13 @@ return {
         Heavy3 = { id = "91124305626795", t = 0.3, range = 10 },
         Ultimate = { id = "94573342662552", t = 0.55, range = 10 },	
     },
+    Misc = {
+        facing = "FRWD", 
+        angle = 70,     
+        type = "parry",  
 
-
+        JackBomb = { id = "114813595215444", t = 1, range = 50 },
+    },
 
 
     
