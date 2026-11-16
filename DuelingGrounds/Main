@@ -290,6 +290,18 @@ local function HttpGet(url)
     return nil
 end
 
+-- GitHub's raw links can hand out a copy up to ~5 minutes old (a ?query on the link doesn't get around it).
+-- A link to the newest commit itself is never stale, so the data files are downloaded through one. GitHub
+-- allows 60 of these lookups an hour; past that it falls back to the normal link.
+local function FreshUrl(url)
+    local repo, path = url:match("^https://raw%.githubusercontent%.com/([^/]+/[^/]+)/refs/heads/main/(.+)$")
+    if not repo then return url end
+    local body = HttpGet("https://api.github.com/repos/" .. repo .. "/commits/main")
+    local sha = body and body:match('"sha"%s*:%s*"(%x+)"')
+    if not sha then return url end
+    return "https://raw.githubusercontent.com/" .. repo .. "/" .. sha .. "/" .. path
+end
+
 -- PING
 -- UiLibrary reads it (Matcha's GetPingValue, then the Stats service, then GetNetworkPing) and remembers which
 -- way worked; Library.PingMethod names it.
@@ -479,8 +491,7 @@ local function LoadData()
     AnimDB, AnimMaxRange = {}, 0
     Status.loaded = 0
 
-    -- cache-buster so GitHub's raw CDN doesn't hand back a stale copy right after you push
-    local src = HttpGet(ANIM_URL .. "?v=" .. tostring(os.time and os.time() or 0))
+    local src = HttpGet(FreshUrl(ANIM_URL))
     local data
     if src then
         -- Matcha can drop the value a loadstring chunk returns, so the file runs inside a function and
@@ -501,7 +512,9 @@ local function LoadData()
             elseif not ok then
                 Log("The animation file errored when run: " .. tostring(err))
             else
-                Log("The animation file didn't return a table (it should start with return { ... })")
+                -- Matcha prints a syntax error itself (just above this line) and then runs nothing
+                Log("The animation file didn't load: if an error is printed just above, it has a typo there (the line "
+                    .. "number is 1 higher than in the file); otherwise it should start with return { ... }")
             end
         end
     end
@@ -669,7 +682,7 @@ local IgnoredIds = {}
 local function LoadIgnored()
     IgnoredIds = {}
 
-    local src = HttpGet(IGNORE_URL)
+    local src = HttpGet(FreshUrl(IGNORE_URL))
     if not src then
         Log("Failed to download ignore list from " .. IGNORE_URL)
         return
