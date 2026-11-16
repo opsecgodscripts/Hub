@@ -345,7 +345,8 @@ end
 --       M1 = { id = "125094062025381", type = "parry", t = 0.225 },
 --       Crit = { id = "71289364417188", t = 0.4 },
 --   },
--- A group's range / type / facing / angle are the defaults for the moves inside it; groups can be nested
+-- A group's range / type / facing / angle are the defaults for the moves inside it (facing = "FRWD" (they
+-- have to look at you), "BACK" (you have to be behind them) or "AOE" (anywhere)); groups can be nested
 -- (Elphael = { Fist = { ... } }). The top group is the class shown in Config: "Fist M1".
 -- pbs / t: parry timings, in seconds after the animation starts (one number or a list).
 -- type = "dodge" presses Q for that move instead of F; unparryable = true always dodges.
@@ -518,22 +519,23 @@ end
 
 -- PER-ANIMATION SETTINGS + FACING CHECK
 -- Each animation has: on/off, type (parry = F, dodge = Q), direction, facing angle, timings, range and a timing
--- offset. The animation file sets the starting values (it can also say facing = "AOE" / "Backwards" and
+-- offset. The animation file sets the starting values (it can also say facing = "FRWD" / "BACK" / "AOE" and
 -- angle = 90);
 -- what you change in Auto Parry > Config is kept in AnimCfg.File and laid on top every time the file loads.
--- Direction: "Facing" = the enemy has to look at you (within the animation's Facing Angle), "AOE" = hits all
--- around (no check), "Backwards" = the hitbox is behind them, so you have to be behind them.
+-- Direction: "FRWD" = the enemy has to look at you (within the animation's Facing Angle), "AOE" = hits all
+-- around (no check), "BACK" = the hitbox is behind them, so you have to be behind them.
 -- Require Facing (Auto Parry) turns the check off for every animation.
 AnimCfg.File = GAME_NAME .. "_AnimConfig.json"
 AnimCfg.Overrides = {} -- id -> { enabled, kind, facing, angle, times, range, offset }
 AnimCfg.DefaultAngle = 70 -- degrees, for animations that don't set one
-AnimCfg.Directions = { "Facing", "AOE", "Backwards" }
+AnimCfg.Directions = { "FRWD", "BACK", "AOE" }
 
+-- "FRWD" / "BACK" / "AOE" from a facing value (older spellings like "Backwards" or "Facing" still work)
 function AnimCfg.FacingOf(spec)
     local v = type(spec) == "table" and string.lower(tostring(spec.facing or spec.direction or "")) or ""
     if v == "aoe" then return "AOE" end
-    if v == "backwards" or v == "back" or v == "behind" then return "Backwards" end
-    return "Facing"
+    if v == "back" or v == "backwards" or v == "behind" then return "BACK" end
+    return "FRWD"
 end
 
 function AnimCfg.Load()
@@ -571,7 +573,7 @@ function AnimCfg.ApplyOne(id)
     info.actions = actions
     info.kind = kind
     info.range = tonumber(o.range) or base.range
-    info.facing = o.facing or base.facing
+    info.facing = o.facing and AnimCfg.FacingOf({ facing = o.facing }) or base.facing
     info.angle = tonumber(o.angle) or base.angle
     info.enabled = o.enabled ~= false
     info.offset = tonumber(o.offset) or 0
@@ -603,7 +605,7 @@ end
 -- may this action fire, given where the enemy is looking? Unknown positions never block it.
 function AnimCfg.FacingOk(enemy, info)
     if not Get("ap_facing_check") then return true end
-    local mode = info and info.facing or "Facing"
+    local mode = info and info.facing or "FRWD"
     if mode == "AOE" or not LocalHRP or not enemy or not enemy.hrp then return true end
     local ok, ex, _, ez, _, _, r02, _, _, _, _, _, r22 = pcall(function() return enemy.hrp.CFrame:GetComponents() end)
     local okMe, me = pcall(function() return LocalHRP.Position end)
@@ -615,7 +617,7 @@ function AnimCfg.FacingOk(enemy, info)
     if len < 1e-6 then return true end
     local cos = math.max(-1, math.min(1, (dx * lx + dz * lz) / len))
     local angle = math.deg(math.acos(cos))
-    if mode == "Backwards" then angle = 180 - angle end
+    if mode == "BACK" then angle = 180 - angle end
     return angle <= (info.angle or AnimCfg.DefaultAngle)
 end
 
@@ -937,7 +939,7 @@ do
         idStatus:Set(cfg.id)
         enabledT:Set(info.enabled ~= false, true)
         typeDD:Set(info.kind == "parry" and "Parry" or "Dodge", true)
-        dirDD:Set(info.facing or "Facing", true)
+        dirDD:Set(info.facing or "FRWD", true)
         angleSlider:Set(info.angle or AnimCfg.DefaultAngle, true)
         angleSlider:SetVisible(info.facing ~= "AOE")
         timesBox:Set(TimesText(info), true)
@@ -974,13 +976,13 @@ do
     dirDD = editSec:AddDropdown({
         Name = "Direction",
         Options = AnimCfg.Directions,
-        Default = "Facing",
+        Default = "FRWD",
         Callback = function(v)
             if cfg.id then AnimCfg.Set(cfg.id, "facing", v) end
             angleSlider:SetVisible(v ~= "AOE")
         end,
     })
-    -- how far off the enemy can look (Facing) or how far off you can be from straight behind them (Backwards)
+    -- how far off the enemy can look (FRWD) or how far off you can be from straight behind them (BACK)
     angleSlider = editSec:AddSlider({
         Name = "Facing Angle",
         Min = 10, Max = 180, Increment = 5, Default = AnimCfg.DefaultAngle, Suffix = " deg",
@@ -2774,14 +2776,14 @@ local function FireDue()
           local animRange = Get("sb_use_general_range") and (Get("sb_range") or 20)
               or (q.info and q.info.range) or DEFAULT_ANIM_RANGE
           local outRange = q.enemy and Dist(q.enemy) > animRange
-          -- the enemy has to be looking at you (AOE: anywhere, Backwards: you behind them) when it is due
+          -- the enemy has to be looking at you (AOE: anywhere, BACK: you behind them) when it is due
           local turned = not outRange and q.enemy and not AnimCfg.FacingOk(q.enemy, q.info)
           if outRange or turned then
             if Get("print_parries") then
                 local okN, nm = pcall(function() return q.model.Name end)
                 local why = outRange
                     and string.format("enemy %.1f studs away, outside the %.0f stud range", Dist(q.enemy), animRange)
-                    or ("enemy not facing you (" .. tostring(q.info and q.info.facing or "Facing") .. ")")
+                    or ("enemy not facing you (" .. tostring(q.info and q.info.facing or "FRWD") .. ")")
                 Log(string.format("Skipped %s@%.3f | %s | %s | %s",
                     q.kind, q.actionT or 0, okN and DisplayName(nm) or "?", AnimNameId(q.id), why))
             end
