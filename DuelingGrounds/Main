@@ -2091,7 +2091,7 @@ do
     local testSec = box:AddSection("Tests")
     local dataSec = box:AddSection("Data")
 
-    -- every action: queued (with when it's due), fired (which key), or skipped (out of range / not facing)
+    -- every action when it comes due: fired (which key) or skipped (out of range / not facing)
     Reg("print_parries", logSec:AddToggle({ Name = "Print Parries", Default = false, Flag = "print_parries", Save = false }))
     -- each animation from your file the moment an enemy starts it
     Reg("print_tracked", logSec:AddToggle({ Name = "Print Tracked Animations", Default = false, Flag = "print_tracked", Save = false }))
@@ -2219,12 +2219,6 @@ local function Schedule(startTime, info, akey, model, id, fst, enemy)
                 -- a feint that already happened after this swing started (before the scan noticed the swing)
                 local ev = Feint.Affects(fst, entry)
                 if ev then entry.feint = ev end
-            end
-            if Get("print_parries") then
-                local okN, nm = pcall(function() return model.Name end)
-                Log(string.format("Queued %s@%.3f | %s | %s | animation was already %.0fms in, action due in %.0fms",
-                    action.kind, action.t, okN and DisplayName(nm) or "?", AnimNameId(id),
-                    (now - startTime) * 1000, (at - now) * 1000))
             end
         end
     end
