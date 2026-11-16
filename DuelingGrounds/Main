@@ -671,6 +671,18 @@ Window = Library:CreateWindow({
     Size = 560,
 })
 
+-- UiLibrary's Animation Tracker (UI tab) goes by usernames; tell it how characters work here
+Library.LocalCharacter = MyCharacter
+Library.ListCharacters = function()
+    local list = {}
+    for _, model in ipairs(OtherCharacters()) do list[#list + 1] = { Name = CharacterLabel(model), Model = model } end
+    return list
+end
+Window:OnDestroy(function()
+    -- another game's script may load the library next
+    if Library.LocalCharacter == MyCharacter then Library.LocalCharacter, Library.ListCharacters = nil, nil end
+end)
+
 local mainTab       = Window:CreateTab({ Name = "Auto Parry", Icon = ">" })
 local visualsTab    = Window:CreateTab({ Name = "Visuals", Icon = "*" })
 
