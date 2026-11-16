@@ -50,243 +50,6 @@ do
     end
 end
 
--- Small helpers for things UiLibrary does differently (kept in one table: the script is close to Lua's limit
--- of local variables)
-local UI = { DestroyHooks = {} }
-
--- COLOUR PICKER
--- UiLibrary has no colour picker, so this is a custom element built from the library's own drawing calls.
--- It is a row with the name and a swatch; click the swatch to open a panel on top of the menu with hue /
--- saturation / brightness bars (click or drag) and a row of quick colours. The value is saved under its Flag as "#RRGGBB".
-UI.ColorCache = {}
-function UI.Hex(c)
-    return string.format("#%02X%02X%02X", math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
-end
--- "#RRGGBB" -> Color3. The same object is returned for the same hex, so the ESP's "colour changed?" checks stay cheap.
-function UI.FromHex(hex)
-    if type(hex) ~= "string" then return nil end
-    local cached = UI.ColorCache[hex]
-    if cached then return cached end
-    local h = hex:gsub("#", "")
-    if #h ~= 6 or not h:match("^%x+$") then return nil end
-    local c = Color3.fromRGB(tonumber(h:sub(1, 2), 16), tonumber(h:sub(3, 4), 16), tonumber(h:sub(5, 6), 16))
-    UI.ColorCache[hex] = c
-    return c
-end
--- current colour of a picker by its Flag
-function UI.Color(flag, fallback)
-    return UI.FromHex(Window.Flags[flag]) or fallback
-end
-function UI.ToHSV(c)
-    local r, g, b = c.R, c.G, c.B
-    local mx, mn = math.max(r, g, b), math.min(r, g, b)
-    local d = mx - mn
-    local h = 0
-    if d > 0 then
-        if mx == r then h = ((g - b) / d) % 6
-        elseif mx == g then h = (b - r) / d + 2
-        else h = (r - g) / d + 4 end
-        h = h / 6
-    end
-    return h, mx > 0 and d / mx or 0, mx
-end
-function UI.FromHSV(h, s, v)
-    local i = math.floor(h * 6) % 6
-    local f = h * 6 - math.floor(h * 6)
-    local p, q, t = v * (1 - s), v * (1 - f * s), v * (1 - (1 - f) * s)
-    local r, g, b
-    if i == 0 then r, g, b = v, t, p
-    elseif i == 1 then r, g, b = q, v, p
-    elseif i == 2 then r, g, b = p, v, t
-    elseif i == 3 then r, g, b = p, q, v
-    elseif i == 4 then r, g, b = t, p, v
-    else r, g, b = v, p, q end
-    return Color3.fromRGB(math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5))
-end
-UI.Presets = {
-    Color3.fromRGB(255, 80, 80), Color3.fromRGB(255, 150, 60), Color3.fromRGB(255, 200, 60),
-    Color3.fromRGB(80, 255, 120), Color3.fromRGB(80, 200, 255), Color3.fromRGB(80, 120, 255),
-    Color3.fromRGB(170, 100, 255), Color3.fromRGB(255, 110, 200), Color3.fromRGB(255, 255, 255),
-}
-
-UI.Picker = {}
-UI.Picker.__index = UI.Picker
-local PICK = { row = 18, bar = 10, gap = 8, segs = 24, swatch = 14 }
-
--- only one panel is open at a time; it floats on top of the elements under it instead of pushing them down
-function UI.ClosePicker()
-    if UI.OpenPicker then
-        UI.OpenPicker.Open = false
-        UI.OpenPicker._drag = nil
-    end
-    UI.OpenPicker = nil
-end
-
-local function inside(px, py, x, y, w, h)
-    return px >= x and px <= x + w and py >= y and py <= y + h
-end
-
--- Runs before the window draws anything (hooked into the library's overlay click step, the same way its dropdown
--- lists work), so a click on the open panel is never taken by an element underneath it.
-function UI.PickerPreClick(win)
-    local p = UI.OpenPicker
-    if not p then return end
-    local seen = p._seen
-    p._seen = false
-    if not seen or not p._panel then
-        UI.ClosePicker() -- the picker wasn't drawn last frame (tab changed, hidden)
-        return
-    end
-    if not win._clicked then return end
-    local r = p._panel
-    if inside(win._mouseX, win._mouseY, r.x, r.y, r.w, r.h) then
-        p._click = { win._mouseX, win._mouseY }
-        win._clicked = false
-    elseif not (p._swatch and inside(win._mouseX, win._mouseY, p._swatch.x, p._swatch.y, p._swatch.w, p._swatch.h)) then
-        UI.ClosePicker() -- clicked somewhere else: close, and let the click through
-    end
-end
-
-function UI.ViewportHeight()
-    local ok, h = pcall(function() return workspace.CurrentCamera.ViewportSize.Y end)
-    return ok and type(h) == "number" and h or 1080
-end
-
-function UI.Picker:_height()
-    return PICK.row
-end
-
-function UI.Picker:_draw(win, x, y, w)
-    local th = win.Theme
-    local sw, sh = 30, 12
-    local sx, sy = x + w - sw, y + (PICK.row - sh) / 2
-    self._swatch = { x = sx - 4, y = y, w = sw + 4, h = PICK.row }
-    if win:_clickIn(sx - 4, y, sw + 4, PICK.row) then
-        local wasOpen = self.Open
-        UI.ClosePicker()
-        if not wasOpen then
-            self.Open = true
-            UI.OpenPicker = self
-            win._openDropdown = nil -- a dropdown list and the panel would overlap
-            win._overlay = nil
-        end
-        win._forceRedraw = true
-    end
-    -- a dropdown list opening closes the panel
-    if self.Open and win._openDropdown then UI.ClosePicker() end
-
-    win:_text(self.Text, x, y + 1, th.Text, 13, 12)
-    win:_box(sx, sy, sw, sh, self.Value, self.Open and th.Accent or th.Border, 11, 3)
-    if not self.Open then return end
-    self._seen = true
-
-    -- the panel: below the row, or above it when there is no room below
-    local step = PICK.bar + PICK.gap
-    local ph = PICK.gap + 3 * step + PICK.swatch + PICK.gap
-    local py = y + PICK.row + 4
-    if py + ph > UI.ViewportHeight() - 4 then py = y - ph - 4 end
-    self._panel = { x = x, y = py, w = w, h = ph }
-
-    local ix, iw = x + 8, w - 16
-    local top = py + PICK.gap
-    local keys = { "H", "S", "V" }
-    local click = self._click
-    self._click = nil
-
-    if click then
-        for i, key in ipairs(keys) do
-            if inside(click[1], click[2], ix, top + (i - 1) * step - 3, iw, PICK.bar + 6) then self._drag = key end
-        end
-    end
-    if self._drag then
-        if win._down then
-            local pct = (win._mouseX - ix) / iw
-            pct = pct < 0 and 0 or (pct > 1 and 1 or pct)
-            self[self._drag] = pct
-            -- keep the hue / saturation the user picked even where the colour itself can't hold them (black, grey)
-            self:Set(UI.FromHSV(self.H, self.S, self.V), true)
-        else
-            self._drag = nil
-        end
-    end
-
-    win:_box(x, py, w, ph, th.Section or th.Element, th.Border, 40, 4)
-    -- the three bars, drawn as segments (Drawing has no gradients)
-    local seg = iw / PICK.segs
-    for j = 0, PICK.segs - 1 do
-        local t = (j + 0.5) / PICK.segs
-        local bx = ix + j * seg
-        win:_rect(bx, top, seg + 1, PICK.bar, UI.FromHSV(t, 1, 1), 42)
-        win:_rect(bx, top + step, seg + 1, PICK.bar, UI.FromHSV(self.H, t, self.V), 42)
-        win:_rect(bx, top + step * 2, seg + 1, PICK.bar, UI.FromHSV(self.H, self.S, t), 42)
-    end
-    for i, key in ipairs(keys) do
-        local mx = ix + math.floor(self[key] * (iw - 2) + 0.5)
-        local my = top + (i - 1) * step - 2
-        win:_rect(mx - 1, my, 4, PICK.bar + 4, th.Section or th.Element, 43)
-        win:_rect(mx, my + 1, 2, PICK.bar + 2, th.Text, 44)
-    end
-
-    -- quick colours
-    local qy = top + step * 3
-    local n = #UI.Presets
-    local gapX = (iw - n * PICK.swatch) / math.max(n - 1, 1)
-    for i, c in ipairs(UI.Presets) do
-        local qx = ix + (i - 1) * (PICK.swatch + gapX)
-        if click and inside(click[1], click[2], qx, qy, PICK.swatch, PICK.swatch) then self:Set(c) end
-        local hover = win:_over(qx, qy, PICK.swatch, PICK.swatch)
-        win:_box(qx, qy, PICK.swatch, PICK.swatch, c, hover and th.Accent or th.Border, 42, 3)
-    end
-end
-
--- keepHSV: the bars set H / S / V themselves; anything else recomputes them from the colour
-function UI.Picker:Set(color, keepHSV)
-    if not keepHSV then self.H, self.S, self.V = UI.ToHSV(color) end
-    local hex = UI.Hex(color)
-    if hex == self._hex then return end
-    self._hex = hex
-    self.Value = UI.FromHex(hex)
-    self.Section:_setFlag(self.Flag, hex)
-end
-
-function UI.Picker:Get()
-    return self.Value
-end
-
-function UI.Picker:_restore(value)
-    local c = UI.FromHex(value)
-    if c and value ~= self._hex then self:Set(c) end
-end
-
-function UI.ColorPicker(section, name, flag, default)
-    local picker = setmetatable({ Text = name, Flag = flag, Open = false }, UI.Picker)
-    section:_add(picker)
-    picker:Set(default)
-    section:_register(picker, {})
-    return picker
-end
-
--- "Title: value" label with SetValue / SetVisible (the extra tone argument old calls pass is ignored)
-function UI.Status(section, title, default)
-    local label = section:AddLabel(title .. ": " .. tostring(default))
-    return {
-        SetValue = function(_, value) label:Set(title .. ": " .. tostring(value)) end,
-        SetVisible = function(_, visible) label:SetVisible(visible) end,
-    }
-end
-
--- replaces a dropdown's options and selects `value` without firing its Callback
-function UI.SetOptions(dd, options, value)
-    dd:Refresh(options, true)
-    dd.Value = value
-    dd.Section:_setFlag(dd.Flag, dd:Get())
-end
-
--- run when the window goes away (Unload in the UI tab, or the script being run again)
-function UI.OnDestroy(fn)
-    UI.DestroyHooks[#UI.DestroyHooks + 1] = fn
-end
-
 local Controls = {}
 local function Reg(flag, ctrl)
     Controls[flag] = ctrl
@@ -294,6 +57,11 @@ local function Reg(flag, ctrl)
 end
 local function Get(flag)
     return Window.Flags[flag]
+end
+-- swaps a dropdown's options and selects `value` without firing its Callback
+local function ReplaceOptions(dd, options, value)
+    dd:Refresh(options, true)
+    dd:Set(value, true)
 end
 
 -- MEMORY / OFFSETS
@@ -497,80 +265,13 @@ local function HttpGet(url)
 end
 
 -- PING
--- Matcha provides its own global GetPingValue(). Grab it here, BEFORE the local GetPingValue below is
--- declared, otherwise the local shadows it and the native function is never called.
-local NativeGetPingValue = GetPingValue
-if type(NativeGetPingValue) ~= "function" and type(getgenv) == "function" then
-    local ok, fn = pcall(function() return getgenv().GetPingValue end)
-    if ok and type(fn) == "function" then NativeGetPingValue = fn end
-end
-if type(NativeGetPingValue) ~= "function" then NativeGetPingValue = nil end
-
-local PingMethod = "none"
-local PingError = nil
-
-local function ValidPing(v)
-    return type(v) == "number" and v == v and v > 0 and v < 10000
-end
-
--- tried in order until one returns a usable number (executors differ in what they expose)
-local PING_METHODS = {
-    { "native GetPingValue", function()
-        if not NativeGetPingValue then error("no native GetPingValue global") end
-        return NativeGetPingValue()
-    end },
-    { "Data Ping", function()
-        return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
-    end },
-    { "Data Ping (string)", function()
-        local s = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValueString()
-        return tonumber(tostring(s):match("[%d%.]+"))
-    end },
-    { "PerformanceStats.Ping", function()
-        return game:GetService("Stats").PerformanceStats.Ping:GetValue()
-    end },
-    -- Matcha-style access: FindFirstChild + property read instead of method calls
-    { "FindFirstChild .Value", function()
-        local stats = game:GetService("Stats")
-        local net = stats:FindFirstChild("Network")
-        local sItem = net and net:FindFirstChild("ServerStatsItem")
-        local item = sItem and sItem:FindFirstChild("Data Ping")
-        return item and item.Value
-    end },
-    { "FindFirstChild GetValue", function()
-        local stats = game:GetService("Stats")
-        local net = stats:FindFirstChild("Network")
-        local sItem = net and net:FindFirstChild("ServerStatsItem")
-        local item = sItem and sItem:FindFirstChild("Data Ping")
-        return item and item:GetValue()
-    end },
-    { "PerformanceStats .Value", function()
-        local item = game:GetService("Stats").PerformanceStats:FindFirstChild("Ping")
-        return item and item.Value
-    end },
-    { "GetNetworkPing", function()
-        return Players.LocalPlayer:GetNetworkPing() * 1000
-    end },
-}
-
-local function GetPingMs()
-    local errs = {}
-    for _, method in ipairs(PING_METHODS) do
-        local ok, v = pcall(method[2])
-        if ok and ValidPing(v) then
-            PingMethod, PingError = method[1], nil
-            return v
-        end
-        errs[#errs + 1] = method[1] .. ": " .. tostring(ok and ("returned " .. tostring(v)) or v)
-    end
-    PingMethod, PingError = "none", table.concat(errs, "\n" .. LOG_TAG .. "   ")
-    return nil
-end
-
+-- UiLibrary reads it (Matcha's GetPingValue, then the Stats service, then GetNetworkPing) and remembers which
+-- way worked; Library.PingMethod names it.
 local function GetPingValue()
-    return GetPingMs()
+    return Library.GetPing()
 end
 
+-- ping -> Ping Comp slider value (timings are tuned for BASE_PING)
 local function PingToComp(ping)
     local comp = math.floor(ping - BASE_PING + 0.5)
     return math.max(-BASE_PING, math.min(300, comp))
@@ -582,7 +283,7 @@ local AutoPing = { smoothing = 0.5, min = 25, max = 300, smooth = nil, at = 0, c
 
 local function UpdateAutoPing(now)
     if AutoPing.smooth and now - AutoPing.at < AutoPing.interval then return end
-    local raw = GetPingMs()
+    local raw = GetPingValue()
     if not raw then return end
 
     if AutoPing.smooth == nil or now - AutoPing.at > AutoPing.interval * 3 then
@@ -635,243 +336,30 @@ local function AnimNameId(id)
 end
 
 -- ANIMATION DATA
--- Entry formats: number | { t1, t2 } | { type = "parry", t = {..}, unparryable = true } | { { type = "dodge", t = 0.4 }, ... }
--- types: parry (F, or Q when the Dodging options swap it), dodge (always Q), unparryable (Q)
--- Moves can also be grouped and named: Claws = { M1 = { id = 123, type = "parry", t = 0.4 }, M2 = { ... } }
--- (see Flatten below for every supported layout; a group's `range` is the default for its moves)
--- Base distance (studs) per animation: add `range = 15` (or `distance` / `dist`) to the entry, e.g.
---   ["rbxassetid://123"] = { type = "parry", t = 0.4, range = 15 }
--- or put it on one item of a list. Used unless "Use General Range" is on.
-
-local function ParseLua(src)
-    local pos, len = 1, #src
-    local parseValue
-
-    local function skip()
-        while pos <= len do
-            local _, ws = src:find("^%s+", pos)
-            if ws then pos = ws + 1 end
-            if src:sub(pos, pos + 1) == "--" then
-                local lvl = src:match("^%-%-%[(=*)%[", pos)
-                if lvl then
-                    local _, e = src:find("]" .. lvl .. "]", pos, true)
-                    pos = e and e + 1 or len + 1
-                else
-                    local nl = src:find("\n", pos, true)
-                    pos = nl and nl + 1 or len + 1
-                end
-            elseif not ws then
-                break
-            end
-        end
-    end
-
-    local function parseTable()
-        pos = pos + 1
-        local t, n = {}, 0
-        while pos <= len do
-            skip()
-            local c = src:sub(pos, pos)
-            if c == "}" then pos = pos + 1 break end
-            if c == "" then break end
-
-            if c == "[" then
-                pos = pos + 1
-                local k = parseValue()
-                skip(); pos = pos + 1
-                skip(); pos = pos + 1
-                t[k] = parseValue()
-            else
-                local name = src:match("^([%a_][%w_]*)%s*=", pos)
-                if name then
-                    pos = pos + #name
-                    skip(); pos = pos + 1
-                    t[name] = parseValue()
-                else
-                    n = n + 1
-                    t[n] = parseValue()
-                end
-            end
-
-            skip()
-            local sep = src:sub(pos, pos)
-            if sep == "," or sep == ";" then pos = pos + 1 end
-        end
-        return t
-    end
-
-    parseValue = function()
-        skip()
-        local c = src:sub(pos, pos)
-        if c == "{" then return parseTable() end
-        if c == '"' or c == "'" then
-            local e = src:find(c, pos + 1, true) or len
-            local s = src:sub(pos + 1, e - 1)
-            pos = e + 1
-            return s
-        end
-        local num = src:match("^-?[%d%.]+", pos)
-        if num then pos = pos + #num return tonumber(num) end
-        local word = src:match("^[%a_][%w_]*", pos)
-        if word then
-            pos = pos + #word
-            if word == "true" then return true end
-            if word == "false" then return false end
-            return nil
-        end
-        pos = pos + 1
-        return nil
-    end
-
-    skip()
-    if src:match("^return", pos) then pos = pos + 6 end
-    local value = parseValue()
-    return value, pos
-end
-
--- Reads a data file no matter how it is written: a plain `return { ... }`, or a file that builds its tables
--- with `local x = { ... }` / merge loops. Comments are stripped, then EVERY top-level { ... } table is parsed
--- and merged into one.
-local function ParseData(src)
-    local clean = src:gsub("%-%-[^\n]*", "")
-    local merged, found = {}, false
-    local pos = 1
-    while true do
-        local s = clean:find("{", pos, true)
-        if not s then break end
-        local ok, value, endPos = pcall(ParseLua, clean:sub(s))
-        if not ok or type(value) ~= "table" then break end
-        for k, v in pairs(value) do merged[k] = v end
-        found = true
-        pos = s + (endPos or 2) - 1
-    end
-    return found and merged or nil
-end
-
-local function Normalize(v)
-    -- a move can keep its actions in an `actions = { ... }` list next to id / range
-    if type(v) == "table" and type(v.actions) == "table" then
-        local acts, r = Normalize(v.actions)
-        return acts, tonumber(v.range or v.distance or v.dist) or r
-    end
-
-    local actions = {}
-    local function add(kind, t, unparryable)
-        if type(t) == "table" then
-            for _, x in ipairs(t) do add(kind, x, unparryable) end
-        elseif type(t) == "number" then
-            local k = string.lower(tostring(kind))
-            if unparryable and k ~= "dodge" then k = "unparryable" end
-            -- crouch actions are no longer supported (there is no uncrouch step any more)
-            if k ~= "crouch" then
-                actions[#actions + 1] = {kind = k, t = t}
-            end
-        end
-    end
-
-    if type(v) == "number" then
-        add("parry", v)
-    elseif type(v) == "table" then
-        if v.type or v.t or v.pbs then
-            add(v.type or "parry", v.t or v.pbs, v.unparryable)
-        else
-            for _, item in ipairs(v) do
-                if type(item) == "number" then
-                    add("parry", item)
-                elseif type(item) == "table" then
-                    add(item.type or "parry", item.t, item.unparryable)
-                end
-            end
-        end
-    end
-    -- optional base distance for this animation
-    local range
-    if type(v) == "table" then
-        range = tonumber(v.range or v.distance or v.dist)
-        if not range then
-            for _, item in ipairs(v) do
-                if type(item) == "table" then
-                    local r = tonumber(item.range or item.distance or item.dist)
-                    if r then range = r break end
-                end
-            end
-        end
-    end
-    return #actions > 0 and actions or nil, range
-end
-
--- Animation ids can be written as a number, "123" or "rbxassetid://123".
-local function IdString(v)
-    if type(v) == "number" then return string.format("%.0f", v) end
-    return CleanId(v)
-end
-
--- true for keys that are themselves an animation id: [123], ["123"], ["rbxassetid://123"]
-local function IsIdKey(k)
-    if type(k) == "number" then return true end
-    if type(k) ~= "string" then return false end
-    return k:match("^%s*%d+%s*$") ~= nil or k:match("^%s*rbxassetid://%d+%s*$") ~= nil
-end
-
--- the animation id(s) a move table carries: id = 123 | id = "rbxassetid://123" | id = { 123, 456 }
-local function MoveIds(v)
-    local raw = v.id or v.ids or v.animationid or v.animation
-    if raw == nil then return nil end
-    local ids = {}
-    if type(raw) == "table" then
-        for _, x in ipairs(raw) do
-            local s = IdString(x)
-            if s then ids[#ids + 1] = s end
-        end
-    else
-        local s = IdString(raw)
-        if s then ids[1] = s end
-    end
-    return #ids > 0 and ids or nil
-end
-
--- Walks the data file and collects { id, name, spec, range } for every animation. Understood layouts:
---   [123] = 0.4                                   (old: id as key)
---   ["rbxassetid://123"] = { type = "dodge", t = 0.4 }
---   Claws = { range = 15, M1 = { id = 123, type = "parry", t = 0.4 }, M2 = { id = 456, t = { 0.3, 0.6 } } }
---   ["Move Name"] = { id = 123, actions = { { type = "parry", t = 0.4 }, { type = "dodge", t = 0.8 } } }
--- A table that has an `id` is a move; a table without one is a group (any depth) whose own `range`
--- becomes the default for the moves inside it.
-local function Flatten(tbl, path, defRange, out, cat)
-    for key, value in pairs(tbl) do
-        if type(value) == "number" and IsIdKey(key) then
-            local id = IdString(key)
-            out[#out + 1] = { id = id, name = id, spec = value, range = defRange, cat = cat or NO_CATEGORY }
-        elseif type(value) == "table" then
-            local label = (path ~= "" and (path .. " ") or "") .. tostring(key)
-            local ids = MoveIds(value)
-            if ids then
-                for _, id in ipairs(ids) do
-                    out[#out + 1] = { id = id, name = label, spec = value, range = defRange, cat = cat or NO_CATEGORY }
-                end
-            elseif IsIdKey(key) then
-                local id = IdString(key)
-                out[#out + 1] = { id = id, name = id, spec = value, range = defRange, cat = cat or NO_CATEGORY }
-            else
-                local before = #out
-                local r = tonumber(value.range or value.distance or value.dist) or defRange
-                Flatten(value, label, r, out, cat or tostring(key))
-                if #out == before then
-                    Log("Skipped '" .. label .. "' (no animation id found inside it)")
-                end
-            end
-        end
-    end
-end
-
-local RefreshCategoryOptions -- assigned once the Debug tab exists
-
--- LOADDATA
--- Downloads ANIM_URL (Plenilune/Animations in the Hub repo). Entries look like
+-- Plenilune/Animations returns a table of entries:
 --   ["rbxassetid://123"] = { name = "M1", range = 20, pbs = { 0.4 } }
--- where pbs is the list of parry timings. Categories come from the comment headers in the file:
---   -- // Catalyst \\ --    starts a category, and a plain comment like  -- Fist  under it is a sub-group.
+-- pbs: parry timings, in seconds after the animation starts (t = { ... } works too).
+-- type = "dodge" presses Q for that move instead of F; unparryable = true always dodges.
+-- range: base distance in studs, used while "Use General Range" is off (DEFAULT_ANIM_RANGE if missing).
+-- Categories come from the comment headers in the file: "-- // Catalyst \\ --" starts one, and a plain
+-- comment like "-- Fist" under it is a sub-group.
 local PLACEHOLDER_IDS = { ["1"] = true } -- the "rbxassetid://1" entries waiting for real ids
+
+-- spec -> list of { kind, t } actions, base range
+local function Normalize(spec)
+    if type(spec) == "number" then spec = { pbs = { spec } } end
+    if type(spec) ~= "table" then return nil end
+    local times = spec.pbs or spec.t
+    if type(times) == "number" then times = { times } end
+    if type(times) ~= "table" then return nil end
+    local kind = string.lower(tostring(spec.type or "parry"))
+    if spec.unparryable and kind ~= "dodge" then kind = "unparryable" end
+    local actions = {}
+    for _, t in ipairs(times) do
+        if type(t) == "number" then actions[#actions + 1] = { kind = kind, t = t } end
+    end
+    return #actions > 0 and actions or nil, tonumber(spec.range)
+end
 
 -- animation id -> { cat = "Elphael", sub = "Fist" } from the comment headers of the data file
 local function ReadCategories(src)
@@ -893,78 +381,65 @@ local function ReadCategories(src)
     return map
 end
 
+local RefreshCategoryOptions -- assigned once the Debug tab exists
+
 local function LoadData()
-    AnimDB = {}
-    AnimMaxRange = 0
-    AnimCategories = {}
+    AnimDB, AnimMaxRange, AnimCategories = {}, 0, {}
     Status.loaded = 0
 
-    local n = 0
     -- cache-buster so GitHub's raw CDN doesn't hand back a stale copy right after you push
     local src = HttpGet(ANIM_URL .. "?v=" .. tostring(os.time and os.time() or 0))
     local data
     if src then
-        if type(loadstring) == "function" then
-            local fn, compileErr = loadstring(src)
-            if fn then
-                local ok, res = pcall(fn)
-                if ok and type(res) == "table" then data = res end
-            else
-                Log("loadstring could not compile the animation file (" .. tostring(compileErr) .. ")")
-            end
-        end
-        if not data then
-            local ok, res = pcall(ParseData, src)
+        local fn, compileErr = loadstring(src)
+        if fn then
+            local ok, res = pcall(fn)
             if ok and type(res) == "table" then
                 data = res
             else
-                Log("fallback parser failed: " .. tostring(res))
+                Log("The animation file errored when run: " .. tostring(res))
             end
+        else
+            Log("The animation file has a syntax error: " .. tostring(compileErr))
         end
     end
 
     if data then
         local cats = ReadCategories(src)
-        local entries = {}
-        Flatten(data, "", nil, entries)
-        for _, e in ipairs(entries) do
-            if not PLACEHOLDER_IDS[e.id] then
-                local actions, range = Normalize(e.spec)
-                range = range or e.range
+        local n = 0
+        for key, spec in pairs(data) do
+            local id = CleanId(key)
+            if id and not PLACEHOLDER_IDS[id] then
+                local actions, range = Normalize(spec)
                 if actions then
-                    local where = cats[e.id]
-                    local moveName = type(e.spec) == "table" and e.spec.name and tostring(e.spec.name) or e.name
-                    local cat = where and where.cat or e.cat
-                    local label = moveName
-                    if where then
-                        label = where.cat .. (where.sub and (" " .. where.sub) or "") .. " " .. moveName
-                    end
-                    AnimDB[e.id] = {name = label, actions = actions, range = range, cat = cat}
+                    local where = cats[id]
+                    local move = type(spec) == "table" and spec.name and tostring(spec.name) or id
+                    local label = where and (where.cat .. (where.sub and (" " .. where.sub) or "") .. " " .. move) or move
+                    AnimDB[id] = { name = label, actions = actions, range = range, cat = where and where.cat or NO_CATEGORY }
                     if range and range > AnimMaxRange then AnimMaxRange = range end
                     n = n + 1
                 else
-                    Log("Skipped '" .. tostring(e.name) .. "' (no valid timing found)")
+                    Log("Skipped " .. tostring(key) .. " (no timings)")
                 end
             end
         end
+        Status.loaded = n
         Log("Loaded " .. n .. " animations")
     elseif src and not src:match("%S") then
-        Log("Animation file downloaded but it is empty. If you just pushed it, GitHub may still be serving the old copy: wait a minute and press Reload Anim Data in the Debug tab.")
-    else
-        Log("Failed to load animation file: " .. ANIM_URL .. (src and (" (could not parse; starts with: " .. src:sub(1, 60) .. ")") or " (download failed)"))
+        Log("The animation file is empty. If you just pushed it, GitHub may still serve the old copy: wait a minute and press Reload Anim Data in the Debug tab.")
+    elseif not src then
+        Log("Failed to download the animation file: " .. ANIM_URL)
     end
-
-    Status.loaded = n
 
     -- names for UiLibrary's built-in Animation Tracker (UI tab)
     local names = {}
     for id, info in pairs(AnimDB) do names[id] = info.name end
     Library.AnimationNames = names
 
-    -- category list (top-level groups of the data file) for the Debug tab's print dropdown
+    -- class list for the Debug tab's print dropdown
     local seenCat = {}
     for _, info in pairs(AnimDB) do
-        if info.cat and not seenCat[info.cat] then
+        if not seenCat[info.cat] then
             seenCat[info.cat] = true
             AnimCategories[#AnimCategories + 1] = info.cat
         end
@@ -1010,26 +485,6 @@ Window = Library:CreateWindow({
     Folder = "Plenilune",
     Size = 560,
 })
--- Window:Destroy() runs this whether it came from Unload or from the script being run again
-Window._onClose = function()
-    for _, fn in ipairs(UI.DestroyHooks) do pcall(fn) end
-end
--- colour picker panel: gets clicks before anything is drawn, and closes when the tab changes or the menu hides
-do
-    local handleOverlay, selectTab, toggle = Window._handleOverlayClick, Window.SelectTab, Window.Toggle
-    function Window:_handleOverlayClick(...)
-        UI.PickerPreClick(self)
-        return handleOverlay(self, ...)
-    end
-    function Window:SelectTab(...)
-        UI.ClosePicker()
-        return selectTab(self, ...)
-    end
-    function Window:Toggle(...)
-        UI.ClosePicker()
-        return toggle(self, ...)
-    end
-end
 
 local mainTab       = Window:CreateTab({ Name = "Auto Parry", Icon = ">" })
 local visualsTab    = Window:CreateTab({ Name = "Visuals", Icon = "*" })
@@ -1038,7 +493,7 @@ local trackerTab    = Window:CreateTab({ Name = "Tracker", Icon = "o" })
 local whitelistTab  = Window:CreateTab({ Name = "Whitelists", Icon = "=" })
 local debugTab      = Window:CreateTab({ Name = "Debug", Icon = "#" })
 
--- FRIEND EXCLUSIONS
+-- FRIEND EXCLUSIONS (kept in their own file, not in the UI settings)
 local HttpService = game:GetService("HttpService")
 local FRIENDS_FILE = "Plenilune_ExcludedFriends.json"
 local IgnoredFriends = {}
@@ -1080,145 +535,120 @@ local function RebuildFriendsLower()
 end
 RebuildFriendsLower()
 
--- WHITELISTS TAB: FRIENDS
+-- WHITELISTS TAB
 do
-local friendsSec = whitelistTab:CreateSection({ Name = "Friends", Side = "Left" })
-friendsSec:AddLabel("Selected players will never be tracked by auto parry.")
-local friendsDropdown
-local function GetPlayerNames()
-    local found, names = {}, {}
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= Players.LocalPlayer then
-            found[player.Name] = true
-        end
-    end
-    for name in pairs(IgnoredFriends) do found[name] = true end
-    for name in pairs(found) do names[#names + 1] = name end
-    table.sort(names, function(a, b) return string.lower(a) < string.lower(b) end)
-    return names
-end
-local function GetIgnoredFriendNames()
-    local names = {}
-    for name in pairs(IgnoredFriends) do names[#names + 1] = name end
-    table.sort(names)
-    return names
-end
-local function RefreshFriendDropdown()
-    local options = GetPlayerNames()
-    if #options == 0 then options = {"No other players"} end
-    if friendsDropdown then
-        local selected = {}
-        for _, name in ipairs(GetIgnoredFriendNames()) do
-            for _, option in ipairs(options) do
-                if option == name then selected[#selected + 1] = name end
-            end
-        end
-        UI.SetOptions(friendsDropdown, options, selected)
-    end
-end
-friendsDropdown = friendsSec:AddDropdown({
-    Name = "Excluded players",
-    Options = (#GetPlayerNames() > 0 and GetPlayerNames() or {"No other players"}),
-    Default = GetIgnoredFriendNames(),
-    Multi = true,
-    -- no Flag: the list is kept in its own file (FRIENDS_FILE)
-    Callback = function(value)
-        if type(value) ~= "table" then return end
-        IgnoredFriends = {}
-        for _, name in ipairs(value) do
-            if type(name) == "string" and name ~= "No other players" then
-                IgnoredFriends[name] = true
-            end
-        end
-        RebuildFriendsLower()
-        SaveIgnoredFriends()
-    end,
-})
-friendsSec:AddButton({ Name = "Refresh player list", Callback = RefreshFriendDropdown })
-friendsSec:AddButton({ Name = "Save exclusions", Callback = SaveIgnoredFriends })
+    local friendsSec = whitelistTab:CreateSection({ Name = "Friends", Side = "Left" })
+    friendsSec:AddLabel("Selected players will never be tracked by auto parry.")
 
+    local function GetPlayerNames()
+        local found, names = {}, {}
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player ~= Players.LocalPlayer then found[player.Name] = true end
+        end
+        for name in pairs(IgnoredFriends) do found[name] = true end
+        for name in pairs(found) do names[#names + 1] = name end
+        table.sort(names, function(a, b) return string.lower(a) < string.lower(b) end)
+        if #names == 0 then names[1] = "No other players" end
+        return names
+    end
+
+    local function GetIgnoredFriendNames()
+        local names = {}
+        for name in pairs(IgnoredFriends) do names[#names + 1] = name end
+        table.sort(names)
+        return names
+    end
+
+    local friendsDropdown = friendsSec:AddDropdown({
+        Name = "Excluded players",
+        Options = GetPlayerNames(),
+        Default = GetIgnoredFriendNames(),
+        Multi = true,
+        -- no Flag: the list is kept in FRIENDS_FILE
+        Callback = function(value)
+            if type(value) ~= "table" then return end
+            IgnoredFriends = {}
+            for _, name in ipairs(value) do
+                if type(name) == "string" and name ~= "No other players" then IgnoredFriends[name] = true end
+            end
+            RebuildFriendsLower()
+            SaveIgnoredFriends()
+        end,
+    })
+    friendsSec:AddButton({
+        Name = "Refresh player list",
+        Callback = function()
+            ReplaceOptions(friendsDropdown, GetPlayerNames(), GetIgnoredFriendNames())
+        end,
+    })
+    friendsSec:AddButton({ Name = "Save exclusions", Callback = SaveIgnoredFriends })
 end
 
 -- AUTO PARRY TAB
+-- Left: Auto Parry, Range. Right: Ping / Feints / Dodging (one box, click a name to switch).
 do
-local parrySec = mainTab:CreateSection({ Name = "Auto Parry", Side = "Left" })
-
-Reg("sb_parry_on", parrySec:AddToggle({
-    Name = "Enabled",
-    Default = false,
-    Flag = "sb_parry_on",
-    Keybind = "None", -- click the key box to bind a key that flips this
-}))
-Reg("sb_parry_players", parrySec:AddToggle({
-    Name = "Auto Parry Players",
-    Default = true,
-    Flag = "sb_parry_players",
-}))
-Reg("sb_parry_npcs", parrySec:AddToggle({
-    Name = "Auto Parry NPCs",
-    Default = true,
-    Flag = "sb_parry_npcs",
-}))
-Reg("sb_parry_chance", parrySec:AddSlider({
-    Name = "Parry Chance",
-    Min = 1, Max = 100, Default = 100, Suffix = "%",
-    Flag = "sb_parry_chance",
-}))
--- Animations from enemies within this many studs are tracked. They are only parried once the enemy is also inside
--- the normal range (General Range, or the animation's own base distance). Nothing is parried beyond it.
-Reg("sb_track_range", parrySec:AddSlider({
-    Name = "Tracking Range",
-    Min = 5, Max = 200, Default = 40, Suffix = " studs",
-    Flag = "sb_track_range",
-}))
-do
-    Reg("sb_display_track", parrySec:AddToggle({
-        Name = "Display Tracking Range",
+    local parrySec = mainTab:CreateSection({ Name = "Auto Parry", Side = "Left" })
+    Reg("sb_parry_on", parrySec:AddToggle({
+        Name = "Enabled",
         Default = false,
-        Flag = "sb_display_track",
+        Flag = "sb_parry_on",
+        Keybind = "None", -- click the key box to bind a key that flips this
     }))
-    UI.ColorPicker(parrySec, "Tracking Range Color", "sb_display_track_color", Color3.fromRGB(255, 200, 60))
+    Reg("sb_parry_players", parrySec:AddToggle({ Name = "Auto Parry Players", Default = true, Flag = "sb_parry_players" }))
+    Reg("sb_parry_npcs", parrySec:AddToggle({ Name = "Auto Parry NPCs", Default = true, Flag = "sb_parry_npcs" }))
+    Reg("sb_parry_chance", parrySec:AddSlider({
+        Name = "Parry Chance",
+        Min = 1, Max = 100, Default = 100, Suffix = "%",
+        Flag = "sb_parry_chance",
+    }))
 
-    -- General Range, its ring and the ring colour only matter while Use General Range is on
+    local rangeSec = mainTab:CreateSection({ Name = "Range", Side = "Left" })
+    -- Animations from enemies within this many studs are tracked. They are only parried once the enemy is also
+    -- inside the normal range (General Range, or the animation's own base distance). Nothing is parried beyond it.
+    Reg("sb_track_range", rangeSec:AddSlider({
+        Name = "Tracking Range",
+        Min = 5, Max = 200, Default = 40, Suffix = " studs",
+        Flag = "sb_track_range",
+    }))
+    Reg("sb_display_track", rangeSec:AddToggle({ Name = "Display Tracking Range", Default = false, Flag = "sb_display_track" }))
+        :AddColorPicker({ Default = Color3.fromRGB(255, 200, 60), Flag = "sb_display_track_color" })
+
+    -- General Range and its ring only matter while Use General Range is on
     local generalDeps = {}
     local function applyGeneral(on)
         for _, c in ipairs(generalDeps) do c:SetVisible(on and true or false) end
     end
     -- On: every animation uses the General Range slider. Off: each animation uses its own base distance from the
     -- data file (DEFAULT_ANIM_RANGE if it has none).
-    local generalToggle = Reg("sb_use_general_range", parrySec:AddToggle({
+    local generalToggle = Reg("sb_use_general_range", rangeSec:AddToggle({
         Name = "Use General Range",
         Default = true,
         Flag = "sb_use_general_range",
         Callback = applyGeneral,
     }))
-    generalDeps[1] = Reg("sb_display_range", parrySec:AddToggle({
-        Name = "Display Range",
-        Default = false,
-        Flag = "sb_display_range",
-    }))
-    generalDeps[2] = UI.ColorPicker(parrySec, "Range Color", "sb_display_range_color", Color3.fromRGB(80, 200, 255))
-    generalDeps[3] = Reg("sb_range", parrySec:AddSlider({
+    generalDeps[1] = Reg("sb_display_range", rangeSec:AddToggle({ Name = "Display Range", Default = false, Flag = "sb_display_range" }))
+    generalDeps[1]:AddColorPicker({ Default = Color3.fromRGB(80, 200, 255), Flag = "sb_display_range_color" })
+    generalDeps[2] = Reg("sb_range", rangeSec:AddSlider({
         Name = "General Range",
         Min = 5, Max = 100, Default = 20, Suffix = " studs",
         Flag = "sb_range",
     }))
     applyGeneral(generalToggle.Value)
-end
 
--- PING COMP (own section, directly under the main Auto Parry section)
-local pingSec = mainTab:CreateSection({ Name = "Ping Compensation", Side = "Left" })
-do
+    local combat = mainTab:CreateMultiSection({ Side = "Right" })
+    local pingSec = combat:AddSection("Ping")
+    local feintSec = combat:AddSection("Feints")
+    local dodgeSec = combat:AddSection("Dodging")
+
+    -- PING: on = your live (smoothed) ping, firing the one-way trip (ping / 2) earlier, nothing under 25 ms;
+    -- off = the Ping Comp slider (ms earlier; timings are tuned for ~60 ping)
     local pingSlider
-    -- On: uses your live (smoothed) ping and fires the one-way trip (ping / 2) earlier, nothing under 25 ms.
-    -- Off: uses the Ping Comp slider.
     local autoPingToggle = Reg("sb_t_autoping", pingSec:AddToggle({
         Name = "Auto Ping Comp",
         Default = true,
         Flag = "sb_t_autoping",
         Callback = function(v) pingSlider:SetVisible(not v) end,
     }))
-    -- fires actions this many ms earlier; timings are tuned for ~60 ping, auto-set from your ping on inject
     pingSlider = Reg("sb_t_ping", pingSec:AddSlider({
         Name = "Ping Comp",
         Min = -BASE_PING, Max = 300, Default = 0, Suffix = "ms",
@@ -1226,34 +656,26 @@ do
         Save = false,
     }))
     pingSlider:SetVisible(not autoPingToggle.Value)
-end
 
-local feintSec = mainTab:CreateSection({ Name = "Feints", Side = "Right" })
--- Watches every nearby enemy for a feint: the "FeintedAt" attribute changing, or a sound named "Feint" appearing.
--- A detected feint cancels only that enemy's swings that were already playing when it happened.
-Reg("sb_feint_detect", feintSec:AddToggle({
-    Name = "Detect Feints",
-    Default = true,
-    Flag = "sb_feint_detect",
-}))
--- chance to still press the scheduled key after a feint is detected
-Reg("sb_parry_feint_chance", feintSec:AddSlider({
-    Name = "Parry Feint Chance",
-    Min = 0, Max = 100, Default = 0, Suffix = "%",
-    Flag = "sb_parry_feint_chance",
-}))
--- fallback poll for enemies that are mid-swing, in ms between checks (0 = every frame)
-Reg("sb_feint_rate", feintSec:AddSlider({
-    Name = "Feint Check Rate",
-    Min = 0, Max = 100, Default = 5, Suffix = "ms",
-    Flag = "sb_feint_rate",
-}))
+    -- FEINTS: watches every nearby enemy for the "FeintedAt" attribute changing or a sound named "Feint"
+    -- appearing; a feint cancels only that enemy's swings that were already playing
+    Reg("sb_feint_detect", feintSec:AddToggle({ Name = "Detect Feints", Default = true, Flag = "sb_feint_detect" }))
+    -- chance to still press the scheduled key after a feint
+    Reg("sb_parry_feint_chance", feintSec:AddSlider({
+        Name = "Parry Feint Chance",
+        Min = 0, Max = 100, Default = 0, Suffix = "%",
+        Flag = "sb_parry_feint_chance",
+    }))
+    -- fallback poll for enemies that are mid-swing, ms between checks (0 = every frame)
+    Reg("sb_feint_rate", feintSec:AddSlider({
+        Name = "Feint Check Rate",
+        Min = 0, Max = 100, Default = 5, Suffix = "ms",
+        Flag = "sb_feint_rate",
+    }))
 
--- DODGING (own section): press Q (dodge) instead of F (parry), with a cooldown between dodges
-local dodgeSec = mainTab:CreateSection({ Name = "Dodging", Side = "Right" })
-do
+    -- DODGING: press Q (dodge) instead of F (parry), with a cooldown between dodges
     local chanceSlider
-    -- every parry action presses Q instead of F (actions marked as dodge in the data always press Q)
+    -- every parry action presses Q (actions marked as dodge in the data always press Q)
     local prioToggle = Reg("sb_dodge_priority", dodgeSec:AddToggle({
         Name = "Prioritize Dodge",
         Default = false,
@@ -1275,91 +697,56 @@ do
     chanceSlider:SetVisible(not prioToggle.Value)
 end
 
-end
-
--- VISUALS TAB (placeholders + ESP options)
+-- VISUALS TAB
+-- Left: ESP (who is drawn) and World / Loot / Misc placeholders. Right: Info / Health (what is drawn).
 do
-local espWorldSec = visualsTab:CreateSection({ Name = "World", Side = "Left" })
-espWorldSec:AddLabel("Nothing here yet.")
-local espLootSec = visualsTab:CreateSection({ Name = "Loot", Side = "Left" })
-espLootSec:AddLabel("Nothing here yet.")
-local espMiscSec = visualsTab:CreateSection({ Name = "Misc", Side = "Left" })
-espMiscSec:AddLabel("Nothing here yet.")
+    local espSec = visualsTab:CreateSection({ Name = "ESP", Side = "Left" })
+    Reg("esp_enabled", espSec:AddToggle({ Name = "Enabled", Default = true, Flag = "esp_enabled" }))
+    -- every other player under workspace.Characters
+    Reg("esp_player", espSec:AddToggle({ Name = "Players", Default = false, Flag = "esp_player" }))
+        :AddColorPicker({ Default = Color3.fromRGB(255, 80, 80), Flag = "esp_player_color" })
+    Reg("esp_self", espSec:AddToggle({ Name = "Self", Default = false, Flag = "esp_self" }))
+        :AddColorPicker({ Default = Color3.fromRGB(80, 255, 120), Flag = "esp_self_color" })
+    -- targets further than this are not drawn; 0 draws everything
+    Reg("esp_range", espSec:AddSlider({
+        Name = "Render Distance",
+        Min = 0, Max = 1000, Increment = 10, Default = 500, Suffix = " studs",
+        Flag = "esp_range",
+    }))
 
-local espEntitiesSec = visualsTab:CreateSection({ Name = "Entities", Side = "Right" })
--- every other player under workspace.Characters (needs Enabled in Options)
-Reg("esp_player", espEntitiesSec:AddToggle({
-    Name = "Player ESP",
-    Default = false,
-    Flag = "esp_player",
-}))
-UI.ColorPicker(espEntitiesSec, "Player Color", "esp_player_color", Color3.fromRGB(255, 80, 80))
-Reg("esp_self", espEntitiesSec:AddToggle({
-    Name = "Self ESP",
-    Default = false,
-    Flag = "esp_self",
-}))
-UI.ColorPicker(espEntitiesSec, "Self Color", "esp_self_color", Color3.fromRGB(80, 255, 120))
+    local more = visualsTab:CreateMultiSection({ Side = "Left" })
+    more:AddSection("World"):AddLabel("Nothing here yet.")
+    more:AddSection("Loot"):AddLabel("Nothing here yet.")
+    more:AddSection("Misc"):AddLabel("Nothing here yet.")
 
-local espOptionsSec = visualsTab:CreateSection({ Name = "Options", Side = "Right" })
-Reg("esp_enabled", espOptionsSec:AddToggle({
-    Name = "Enabled",
-    Default = true,
-    Flag = "esp_enabled",
-}))
-Reg("esp_distance", espOptionsSec:AddToggle({
-    Name = "Distance",
-    Default = true,
-    Flag = "esp_distance",
-}))
-UI.ColorPicker(espOptionsSec, "Distance Color", "esp_distance_color", Color3.fromRGB(255, 255, 255))
-Reg("esp_box", espOptionsSec:AddToggle({
-    Name = "Box",
-    Default = true,
-    Flag = "esp_box",
-}))
-Reg("esp_name", espOptionsSec:AddToggle({
-    Name = "Name",
-    Default = true,
-    Flag = "esp_name",
-}))
--- the three health options below only show while Health is on
-local espHealthSubs = {}
-local function applyHealthSubs(on)
-    for _, c in ipairs(espHealthSubs) do c:SetVisible(on and true or false) end
-end
-local espHealthToggle = Reg("esp_health", espOptionsSec:AddToggle({
-    Name = "Health",
-    Default = true,
-    Flag = "esp_health",
-    Callback = applyHealthSubs,
-}))
-espHealthSubs[1] = Reg("esp_health_bar", espOptionsSec:AddToggle({
-    Name = "Health Bar",
-    Default = true,
-    Flag = "esp_health_bar",
-}))
--- used while "Colour by HP" is off
-espHealthSubs[#espHealthSubs + 1] = UI.ColorPicker(espOptionsSec, "Health Bar Color", "esp_health_bar_color", Color3.fromRGB(60, 255, 100))
--- shows the health in the label: name - [HP]
-espHealthSubs[#espHealthSubs + 1] = Reg("esp_health_text", espOptionsSec:AddToggle({
-    Name = "Health Text",
-    Default = false,
-    Flag = "esp_health_text",
-}))
--- green -> yellow -> red as health drops; off = plain green bar, text in the ESP colour
-espHealthSubs[#espHealthSubs + 1] = Reg("esp_health_color", espOptionsSec:AddToggle({
-    Name = "Colour by HP",
-    Default = true,
-    Flag = "esp_health_color",
-}))
-applyHealthSubs(espHealthToggle.Value)
--- targets further than this are not drawn; 0 draws everything
-Reg("esp_range", espOptionsSec:AddSlider({
-    Name = "Render Distance",
-    Min = 0, Max = 1000, Increment = 10, Default = 500, Suffix = " studs",
-    Flag = "esp_range",
-}))
+    local parts = visualsTab:CreateMultiSection({ Side = "Right" })
+    local infoSec = parts:AddSection("Info")
+    local healthSec = parts:AddSection("Health")
+
+    Reg("esp_box", infoSec:AddToggle({ Name = "Box", Default = true, Flag = "esp_box" }))
+    Reg("esp_name", infoSec:AddToggle({ Name = "Name", Default = true, Flag = "esp_name" }))
+    Reg("esp_distance", infoSec:AddToggle({ Name = "Distance", Default = true, Flag = "esp_distance" }))
+        :AddColorPicker({ Default = Color3.fromRGB(255, 255, 255), Flag = "esp_distance_color" })
+
+    -- the options under Health only show while it is on
+    local healthSubs = {}
+    local function applyHealthSubs(on)
+        for _, c in ipairs(healthSubs) do c:SetVisible(on and true or false) end
+    end
+    local healthToggle = Reg("esp_health", healthSec:AddToggle({
+        Name = "Health",
+        Default = true,
+        Flag = "esp_health",
+        Callback = applyHealthSubs,
+    }))
+    -- the swatch is the bar colour while "Colour by HP" is off
+    healthSubs[1] = Reg("esp_health_bar", healthSec:AddToggle({ Name = "Health Bar", Default = true, Flag = "esp_health_bar" }))
+    healthSubs[1]:AddColorPicker({ Default = Color3.fromRGB(60, 255, 100), Flag = "esp_health_bar_color" })
+    -- shows the health in the label: name - [HP]
+    healthSubs[2] = Reg("esp_health_text", healthSec:AddToggle({ Name = "Health Text", Default = false, Flag = "esp_health_text" }))
+    -- green -> yellow -> red as health drops; off = the Health Bar colour, text in the ESP colour
+    healthSubs[3] = Reg("esp_health_color", healthSec:AddToggle({ Name = "Colour by HP", Default = true, Flag = "esp_health_color" }))
+    applyHealthSubs(healthToggle.Value)
 end
 
 -- PLAYER ESP drawing (same methods as the Deepwoken ESP: own camera projection, cached Drawing writes,
@@ -1639,7 +1026,7 @@ do
         w, h = math.floor(w + .5), math.floor(h + .5)
         local tx = left + w * .5
 
-        local col = UI.Color(kind.color, WHITE)
+        local col = Get(kind.color) or WHITE
         if e.col ~= col then
             e.col = col
             e.box.Color = col
@@ -1673,7 +1060,7 @@ do
                     local emptyH = h - fillH
                     if e.fx ~= barX or e.fy ~= top + emptyH then e.fx, e.fy = barX, top + emptyH e.fill.Position = Vector2.new(barX, top + emptyH) end
                     if e.fh ~= fillH then e.fh = fillH e.fill.Size = Vector2.new(3, fillH) end
-                    local fcol = Get("esp_health_color") and healthColor(hpF) or UI.Color("esp_health_bar_color", BAR_GREEN)
+                    local fcol = Get("esp_health_color") and healthColor(hpF) or (Get("esp_health_bar_color") or BAR_GREEN)
                     if e.fcol ~= fcol then e.fcol = fcol e.fill.Color = fcol end
                     setVisible(e.fill, true)
                     if emptyH >= 1 then
@@ -1745,7 +1132,7 @@ do
         if Get("esp_distance") and rec.kind ~= "self" then
             local txt = string.format("[%d]", math.floor(dist + .5))
             if e.dist.Text ~= txt then e.dist.Text = txt end
-            local dcol = UI.Color("esp_distance_color", WHITE)
+            local dcol = Get("esp_distance_color") or WHITE
             if e.dcol ~= dcol then e.dcol = dcol e.dist.Color = dcol end
             if e.dx ~= tx or e.dy ~= top + h + 6 then e.dx, e.dy = tx, top + h + 6 e.dist.Position = Vector2.new(tx, top + h + 6) end
             setVisible(e.dist, true)
@@ -1812,18 +1199,18 @@ do
         if not okp or not pos then return hideRings() end
         local general = Get("sb_range") or 20
         if wantRange then
-            drawRing(rings.range, pos, general, UI.Color("sb_display_range_color", WHITE))
+            drawRing(rings.range, pos, general, Get("sb_display_range_color") or WHITE)
         else
             hideRing(rings.range)
         end
         if wantTrack then
-            drawRing(rings.track, pos, Get("sb_track_range") or 40, UI.Color("sb_display_track_color", WHITE))
+            drawRing(rings.track, pos, Get("sb_track_range") or 40, Get("sb_display_track_color") or WHITE)
         else
             hideRing(rings.track)
         end
     end
 
-    UI.OnDestroy(function()
+    Window:OnDestroy(function()
         for _, rec in pairs(recs) do removeEntry(rec.entry) end
         recs = {}
         for _, r in pairs(rings) do
@@ -1977,7 +1364,7 @@ local function SetOptions(dd, names)
     local keep = dd.Value
     local pick = names[1]
     for _, n in ipairs(names) do if n == keep then pick = n break end end
-    UI.SetOptions(dd, names, pick)
+    ReplaceOptions(dd, names, pick)
 end
 
 local targetType, playerDD, npcDD, pathBox, fallbackDD, folderStatus
@@ -2027,7 +1414,7 @@ local function RefreshLists()
     end
     table.sort(fbNames, function(a, b) return string.lower(a) < string.lower(b) end)
     SetOptions(fallbackDD, fbNames)
-    folderStatus:SetValue(folder and tostring(folder.Name) or "-")
+    folderStatus:Set(folder and tostring(folder.Name) or "-")
 end
 
 local function UpdateTargetVisibility(kind)
@@ -2053,7 +1440,7 @@ targetType = trackSec:AddDropdown({
 playerDD   = trackSec:AddDropdown({ Name = "Player List", Options = { "None" }, Default = "None" })
 npcDD      = trackSec:AddDropdown({ Name = "NPC List", Options = { "None" }, Default = "None" })
 fallbackDD = trackSec:AddDropdown({ Name = "Fallback List", Options = { "None" }, Default = "None" })
-folderStatus = UI.Status(trackSec, "Folder", "-")
+folderStatus = trackSec:AddStatus("Folder", "-")
 -- Prev / Next buttons walk the player (or NPC) list one entry at a time, for long lists
 local function StepDropdown(dd, dir)
     local opts = dd._options or {}
@@ -2082,13 +1469,13 @@ pathBox = trackSec:AddTextbox({
 })
 UpdateTargetVisibility("LocalPlayer")
 
-local trackingStatus = UI.Status(trackSec, "Tracking", "None")
+local trackingStatus = trackSec:AddStatus("Tracking", "None")
 
 local function UpdateTrackingStatus()
     if TrackedCount == 0 then
-        trackingStatus:SetValue("None")
+        trackingStatus:Set("None")
     else
-        trackingStatus:SetValue(TrackedCount .. " target" .. (TrackedCount > 1 and "s" or ""))
+        trackingStatus:Set(TrackedCount .. " target" .. (TrackedCount > 1 and "s" or ""))
     end
 end
 
@@ -2192,11 +1579,12 @@ local function TrackerStep()
 end
 
 -- DEBUG TAB
--- Left column: Data (reload + console dumps), Logging (console output toggles), Tools (quick checks / tests).
--- Right column: Status (live info).
-local dataSec  = debugTab:CreateSection({ Name = "Data", Side = "Left" })
-local logSec   = debugTab:CreateSection({ Name = "Logging", Side = "Left" })
-local toolsSec = debugTab:CreateSection({ Name = "Tools", Side = "Left" })
+-- Left: Data (reload + console dumps) / Logging (console output toggles) / Tools (quick checks), one box.
+-- Right: Status (live info).
+local debugBox = debugTab:CreateMultiSection({ Side = "Left" })
+local dataSec  = debugBox:AddSection("Data")
+local logSec   = debugBox:AddSection("Logging")
+local toolsSec = debugBox:AddSection("Tools")
 dataSec:AddButton({ Name = "Reload Anim Data", Callback = function() LoadData() end })
 dataSec:AddButton({ Name = "Reload Ignored Anims", Callback = function() LoadIgnored() end })
 -- Prints the animations of one category (a top-level group of the data file, e.g. Katana), or all of them.
@@ -2244,7 +1632,7 @@ RefreshCategoryOptions = function()
     local keep = CategoryDD.Value
     local pick = names[1]
     for _, n in ipairs(names) do if n == keep then pick = n break end end
-    UI.SetOptions(CategoryDD, names, pick)
+    ReplaceOptions(CategoryDD, names, pick)
 end
 RefreshCategoryOptions()
 
@@ -2267,14 +1655,14 @@ dataSec:AddButton({
 local St = {}
 do
 local statSec = debugTab:CreateSection({ Name = "Status", Side = "Right" })
-St.Loaded = UI.Status(statSec, "Loaded anims", "0")
-St.Ignored = UI.Status(statSec, "Ignored anims", "0")
-St.Track = UI.Status(statSec, "Tracking", "0")
-St.Last = UI.Status(statSec, "Last", "none")
-St.Dist = UI.Status(statSec, "Distance", "0.0")
-St.Loop = UI.Status(statSec, "Loop / Scan", "0 / 0 ms")
-St.Ping = UI.Status(statSec, "Ping / Comp", "-")
-St.Feint = UI.Status(statSec, "Feint monitor", "-")
+St.Loaded = statSec:AddStatus("Loaded anims", "0")
+St.Ignored = statSec:AddStatus("Ignored anims", "0")
+St.Track = statSec:AddStatus("Tracking", "0")
+St.Last = statSec:AddStatus("Last", "none")
+St.Dist = statSec:AddStatus("Distance", "0.0")
+St.Loop = statSec:AddStatus("Loop / Scan", "0 / 0 ms")
+St.Ping = statSec:AddStatus("Ping / Comp", "-")
+St.Feint = statSec:AddStatus("Feint monitor", "-")
 end
 
 local function ApplyPing(samples, silent)
@@ -2311,14 +1699,15 @@ toolsSec:AddButton({
     Callback = function()
         local myPing = GetPingValue()
         if not myPing then
-            Log("Ping read failed. Every method tried:\n" .. LOG_TAG .. "   " .. tostring(PingError))
-            Window:Notify("Ping", "Could not read your ping (see console).", 4)
+            Log("Ping read failed: this executor gives no way to read it")
+            Window:Notify("Ping", "Could not read your ping.", 4)
             return
         end
 
         local comp = GetPingComp()
-        Log(string.format("Ping: %.0f ms | Comp: %.0f ms | via %s", myPing, comp, PingMethod))
-        Window:Notify("Ping", string.format("%.0f ms (comp %.0f ms) via %s", myPing, comp, PingMethod), 3)
+        local via = tostring(Library.PingMethod or "?")
+        Log(string.format("Ping: %.0f ms | Comp: %.0f ms | via %s", myPing, comp, via))
+        Window:Notify("Ping", string.format("%.0f ms (comp %.0f ms) via %s", myPing, comp, via), 3)
     end,
 })
 
@@ -2358,24 +1747,24 @@ local function UpdateStatusUI(now)
     -- the status lines are only on screen in the Debug tab, so don't touch them otherwise
     if not Window.Visible or Window._currentTab ~= debugTab then return end
 
-    St.Loaded:SetValue(tostring(Status.loaded))
-    St.Ignored:SetValue(tostring(Status.ignored))
-    St.Track:SetValue(tostring(Status.tracked))
-    St.Last:SetValue(tostring(Status.last))
-    St.Dist:SetValue(string.format("%.1f", Status.lastDist))
-    St.Loop:SetValue(string.format("%.0f / %.0f ms", Status.loopMs, Status.scanMs))
-    St.Feint:SetValue(tostring(Status.feint or "-"))
+    St.Loaded:Set(tostring(Status.loaded))
+    St.Ignored:Set(tostring(Status.ignored))
+    St.Track:Set(tostring(Status.tracked))
+    St.Last:Set(tostring(Status.last))
+    St.Dist:Set(string.format("%.1f", Status.lastDist))
+    St.Loop:Set(string.format("%.0f / %.0f ms", Status.loopMs, Status.scanMs))
+    St.Feint:Set(tostring(Status.feint or "-"))
     local livePing = GetPingValue()
     if livePing then
         Status.ping = livePing
         if Controls.sb_t_autoping.Value then
             UpdateAutoPing(now)
-            St.Ping:SetValue(string.format("%.0f / %.0f ms (auto)", AutoPing.smooth or livePing, AutoPing.comp))
+            St.Ping:Set(string.format("%.0f / %.0f ms (auto)", AutoPing.smooth or livePing, AutoPing.comp))
         else
-            St.Ping:SetValue(string.format("%.0f / %d ms", livePing, Controls.sb_t_ping.Value or 0))
+            St.Ping:Set(string.format("%.0f / %d ms", livePing, Controls.sb_t_ping.Value or 0))
         end
     else
-        St.Ping:SetValue("unavailable")
+        St.Ping:Set("unavailable")
     end
 end
 
@@ -3201,7 +2590,7 @@ task.spawn(function()
     ApplyPing(6, true)
 end)
 
-UI.OnDestroy(function()
+Window:OnDestroy(function()
     for _, r in ipairs(Releases) do pcall(keyrelease, r.vk) end
     Releases = {}
     Queue, Active, Tracked, TrackedCount = {}, {}, {}, 0
