@@ -343,6 +343,7 @@ local NO_CATEGORY = "Ungrouped"
 local Active      = {}
 local Queue       = {}
 local Status      = {loaded = 0, ignored = 0, tracked = 0, last = "none", lastDist = 0, loopMs = 0, scanMs = 0, ping = 0, feint = "-"}
+local DebugTab    = {} -- Debug tab hooks (Update), filled in where the tab is built
 local AnimCfg     = {} -- per-animation settings + facing check (filled in below the animation data)
 
 local function Log(msg) print(LOG_TAG .. " " .. tostring(msg)) end
@@ -534,7 +535,10 @@ local function LoadData()
     local names = {}
     for id, info in pairs(AnimDB) do names[id] = info.name end
     Library.AnimationNames = names
-    if AnimCfg.RefreshUI then pcall(AnimCfg.RefreshUI) end
+    if AnimCfg.RefreshUI then
+        local ok, err = pcall(AnimCfg.RefreshUI)
+        if not ok then Log("Config couldn't show the animations: " .. tostring(err)) end
+    end
 end
 
 -- PER-ANIMATION SETTINGS + FACING CHECK
@@ -695,6 +699,7 @@ end)
 
 local mainTab       = Window:CreateTab({ Name = "Auto Parry", Icon = ">" })
 local visualsTab    = Window:CreateTab({ Name = "Visuals", Icon = "*" })
+local debugTab      = Window:CreateTab({ Name = "Debug", Icon = "#" })
 
 -- AUTO PARRY TAB
 -- Left: Auto Parry, Range. Right: Ping / Feints / Dodging (one box, click a name to switch).
@@ -2077,6 +2082,107 @@ local function Perform(kind, hold, tag, model, id, report, meta)
     end
 end
 
+-- DEBUG TAB
+-- Left: Logging (what gets printed to the console) / Tests (press F or Q through the real parry path) /
+-- Data (reload the files). Right: Status (live numbers, updated while the Debug tab is open).
+do
+    local box = debugTab:CreateMultiSection({ Side = "Left" })
+    local logSec = box:AddSection("Logging")
+    local testSec = box:AddSection("Tests")
+    local dataSec = box:AddSection("Data")
+
+    -- every action: queued (with when it's due), fired (which key), or skipped (out of range / not facing)
+    Reg("print_parries", logSec:AddToggle({ Name = "Print Parries", Default = false, Flag = "print_parries", Save = false }))
+    -- each animation from your file the moment an enemy starts it
+    Reg("print_tracked", logSec:AddToggle({ Name = "Print Tracked Animations", Default = false, Flag = "print_tracked", Save = false }))
+    -- animations enemies play that aren't in your file (or the ignore list): handy for finding new ids
+    Reg("print_unknown", logSec:AddToggle({ Name = "Print Unknown Animations", Default = false, Flag = "print_unknown", Save = false }))
+    -- feints the monitor sees and actions skipped because of them
+    Reg("print_feints", logSec:AddToggle({ Name = "Print Feints", Default = false, Flag = "print_feints", Save = false }))
+
+    -- tests wait 3 seconds so you can click back into the game, then press through Perform like a real parry
+    local busy = false
+    local function TestButton(title, kind)
+        testSec:AddButton({
+            Name = title .. " (in 3s)",
+            Callback = function()
+                if busy then return end
+                busy = true
+                Window:Notify(title, "Pressing in 3 seconds", 3)
+                task.wait(3)
+                if Window.Running then
+                    Perform(kind, 0.05, " (test)", { Name = "Test" }, "test", function(stage)
+                        Log("Test: " .. stage)
+                        Window:Notify(title, stage, 3)
+                    end, { test = true })
+                end
+                busy = false
+            end,
+        })
+    end
+    TestButton("Test Parry (F)", "parry")
+    TestButton("Test Dodge (Q)", "dodge")
+    testSec:AddButton({
+        Name = "Print Ping",
+        Callback = function()
+            local ping = GetPingValue()
+            if not ping then
+                Window:Notify("Ping", "Could not read your ping.", 3)
+                return
+            end
+            local msg = string.format("%.0f ms, firing %.0f ms early (via %s)", ping, GetPingComp(), tostring(Library.PingMethod or "?"))
+            Log("Ping: " .. msg)
+            Window:Notify("Ping", msg, 3)
+        end,
+    })
+
+    dataSec:AddButton({ Name = "Reload Animations", Callback = function() LoadData() end })
+    dataSec:AddButton({ Name = "Reload Ignore List", Callback = function() LoadIgnored() end })
+    dataSec:AddButton({
+        Name = "Print Animations",
+        Callback = function()
+            local ids = {}
+            for id in pairs(AnimDB) do ids[#ids + 1] = id end
+            table.sort(ids, function(a, b) return (AnimDB[a].name or a) < (AnimDB[b].name or b) end)
+            for _, id in ipairs(ids) do
+                local info = AnimDB[id]
+                local times = {}
+                for _, a in ipairs(info.actions) do times[#times + 1] = string.format("%s@%.3f", a.kind, a.t) end
+                Log(string.format("%s | %s | %s | %s %s deg | range %s%s", info.name, id, table.concat(times, ", "),
+                    tostring(info.facing), tostring(info.angle), tostring(info.range or DEFAULT_ANIM_RANGE),
+                    info.enabled == false and " | OFF" or ""))
+            end
+            Window:Notify("Animations", "Printed " .. #ids .. " to the console", 3)
+        end,
+    })
+
+    local statSec = debugTab:CreateSection({ Name = "Status", Side = "Right" })
+    local st = {
+        loaded = statSec:AddStatus("Loaded anims", "0"),
+        ignored = statSec:AddStatus("Ignored anims", "0"),
+        enemies = statSec:AddStatus("Players found", "0"),
+        tracked = statSec:AddStatus("Tracking now", "0"),
+        last = statSec:AddStatus("Last animation", "none"),
+        dist = statSec:AddStatus("Its distance", "-"),
+        ping = statSec:AddStatus("Ping / early", "-"),
+        feint = statSec:AddStatus("Feint monitor", "-"),
+    }
+    local nextUpdate = 0
+    DebugTab.Update = function(now)
+        if now < nextUpdate or not Window.Visible or Window._currentTab ~= debugTab then return end
+        nextUpdate = now + 0.25
+        st.loaded:Set(Status.loaded)
+        st.ignored:Set(Status.ignored)
+        st.enemies:Set(#Enemies)
+        st.tracked:Set(Status.tracked)
+        st.last:Set(Status.last)
+        st.dist:Set(string.format("%.1f studs", Status.lastDist or 0))
+        local ping = GetPingValue()
+        st.ping:Set(ping and string.format("%.0f / %.0f ms", ping, GetPingComp()) or "unavailable")
+        st.feint:Set(Status.feint or "-")
+    end
+end
+
 -- Every action is queued at startTime + action.t - ping comp and pressed as soon as it is due (next frame at the
 -- latest). Detect Feints only decides whether to skip it; it never waits or delays anything.
 -- `fst` is the enemy's feint state (nil when Detect Feints is off); it is only stored on the queue entry.
@@ -2228,6 +2334,16 @@ local function ScanStep(now)
                 for _, anim in ipairs(GetPlayingAnims(enemy)) do
                     local id   = anim.id
                     local info = AnimDB[id]
+                    if not info and Get("print_unknown") and not IgnoredIds[id] then
+                        -- not in the file: printed once each time this enemy starts it (Debug > Print Unknown)
+                        local ukey = enemy.key .. "|?" .. id
+                        seenNow[ukey] = true
+                        if not Active[ukey] then
+                            Active[ukey] = now
+                            Log(string.format("Unknown animation %s from %s | %.1f studs | %.2fs in",
+                                id, DisplayName(enemy.name), dist, anim.elapsed or 0))
+                        end
+                    end
                     if info and info.enabled ~= false then
                         if fs and now + 0.25 > fs.animUntil then fs.animUntil = now + 0.25 end -- keeps the fallback poll on this enemy
                         local akey = enemy.key .. "|" .. id
@@ -2236,6 +2352,10 @@ local function ScanStep(now)
 
                         if not Active[akey] then
                             Status.last, Status.lastDist = info.name or id, dist
+                            if Get("print_tracked") then
+                                Log(string.format("Tracking %s from %s | %.1f studs | %.2fs in",
+                                    AnimNameId(id), DisplayName(enemy.name), dist, anim.elapsed or 0))
+                            end
 
                             -- every tracked animation is scheduled (subject to Parry Chance); the range check
                             -- happens when each action comes due (see FireDue)
@@ -2323,6 +2443,7 @@ task.spawn(function()
         end
         lastLoop = now
         AnimCfg.SaveIfDirty(now)
+        if DebugTab.Update then pcall(DebugTab.Update, now) end
 
         if #Releases > 0 then
             for i = #Releases, 1, -1 do
