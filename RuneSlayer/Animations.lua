@@ -44,7 +44,7 @@ return {
         angle = 70,      -- default angle for everything in Fist
         type = "parry",  -- default key for everything in Fist
 
-        LeftSwing = { id = "14887593177", t = 0.5 },
+        LeftSwing = { id = "14887593177", t = 0.5, range = 38 },
 		Stomp = { id = "14889087499", t = 0.6 },
 		Homerun = { id = "14887780810", hits = {
 			{ t = 0.6, range = 30 },
