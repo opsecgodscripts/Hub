@@ -1,5 +1,5 @@
 local GAME_NAME = "RuneSlayer"
-local VERSION   = "v1.0.7" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.8" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -1045,6 +1045,10 @@ do
         timesBox:Set(TimesText(info), true)
         hitRangeBox:Set(HitRangesText(info), true)
         rangeSlider:Set(info.range or DEFAULT_ANIM_RANGE, true)
+        -- the animation's Range only matters for hits without their own: hide it when every hit has one
+        local allOwn = #info.actions > 0
+        for _, a in ipairs(info.actions) do if not a.range then allOwn = false end end
+        rangeSlider:SetVisible(not allOwn)
         offsetSlider:Set(info.offset or 0, true)
     end
 
@@ -1129,7 +1133,7 @@ do
     })
     -- used while Use General Range is off (and by hits without their own range)
     rangeSlider = editSec:AddSlider({
-        Name = "Range",
+        Name = "Range (hits without their own)",
         Min = 1, Max = 200, Default = DEFAULT_ANIM_RANGE, Suffix = " studs",
         Callback = function(v) if cfg.id then AnimCfg.Set(cfg.id, "range", v) end end,
     })
