@@ -1,5 +1,5 @@
 local GAME_NAME = "RuneSlayer"
-local VERSION   = "v1.0.1" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.2" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -582,6 +582,10 @@ local function LoadData()
                     end
                     local times = {}
                     for _, a in ipairs(actions) do times[#times + 1] = a.t end
+                    if AnimDB[id] then
+                        Log(string.format("Duplicate id %s: %s and %s share it, only %s is kept (fix one of their ids)",
+                            id, tostring(AnimDB[id].name), label, label))
+                    end
                     AnimDB[id] = {
                         name = label, actions = actions, range = range, cat = where and where.cat or e.cat or NO_CATEGORY,
                         -- what the file says; your Config changes are laid on top of this (AnimCfg.ApplyOne)
@@ -818,7 +822,7 @@ local visualsTab    = Window:CreateTab({ Name = "Visuals", Icon = "*" })
 local debugTab      = Window:CreateTab({ Name = "Debug", Icon = "#" })
 
 -- AUTO PARRY TAB
--- Left: Auto Parry, Range. Right: Ping / Dodging (one box, click a name to switch).
+-- Left: Auto Parry / Config. Right: Ping / Dodging (one box, click a name to switch), then Range.
 do
     -- Auto Parry | Config in one box
     local parryBox = mainTab:CreateMultiSection({ Side = "Left" })
@@ -842,7 +846,12 @@ do
     -- are in Config); off = never check
     Reg("ap_facing_check", parrySec:AddToggle({ Name = "Require Facing", Default = true, Flag = "ap_facing_check" }))
 
-    local rangeSec = mainTab:CreateSection({ Name = "Range", Side = "Left" })
+
+    local combat = mainTab:CreateMultiSection({ Side = "Right" })
+    local pingSec = combat:AddSection("Ping")
+    local dodgeSec = combat:AddSection("Dodging")
+
+    local rangeSec = mainTab:CreateSection({ Name = "Range", Side = "Right" })
     -- Animations from enemies within this many studs are tracked. They are only parried once the enemy is also
     -- inside the normal range (General Range, or the animation's own base distance). Nothing is parried beyond it.
     Reg("sb_track_range", rangeSec:AddSlider({
@@ -874,10 +883,6 @@ do
         Flag = "sb_range",
     }))
     applyGeneral(generalToggle.Value)
-
-    local combat = mainTab:CreateMultiSection({ Side = "Right" })
-    local pingSec = combat:AddSection("Ping")
-    local dodgeSec = combat:AddSection("Dodging")
 
     -- PING: on = your live (smoothed) ping, firing the one-way trip (ping / 2) earlier, nothing under 25 ms;
     -- off = the Ping Comp slider (ms earlier; timings are tuned for ~60 ping)
