@@ -1,5 +1,5 @@
 local GAME_NAME = "RuneSlayer"
-local VERSION   = "v1.0.9" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.1.0" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -171,6 +171,18 @@ local function CharacterLabel(model)
     return Aliases[name] or Aliases[base] or base
 end
 
+-- NPCs auto parry never looks at: not tracked, scheduled or printed (ESP still shows them). Names are matched
+-- without the ".<number>" the game adds, case doesn't matter.
+local IGNORED_NPCS = { "Fairy", "Golden Fairy" }
+local IgnoredSet = {}
+for _, n in ipairs(IGNORED_NPCS) do IgnoredSet[string.lower(n)] = true end
+local function IsIgnoredModel(model)
+    local ok, name = pcall(function() return model.Name end)
+    if not ok then return false end
+    local base = DisplayName(name):gsub("%.%d+$", "")
+    return IgnoredSet[string.lower(base)] == true
+end
+
 local AnimCache, AnimCacheN = {}, 0
 local AnimatorCache, AnimatorCacheN = {}, 0
 
@@ -232,6 +244,7 @@ local function RefreshEnemies(now)
     LocalHRP = me and me:FindFirstChild("HumanoidRootPart") or nil
 
     for _, model in ipairs(WatchedCharacters()) do
+      if not IsIgnoredModel(model) then
         local addr = model.Address
         local cached = EnemyCache[addr]
         if cached and cached.dead and now < cached.retryAt then
@@ -245,6 +258,7 @@ local function RefreshEnemies(now)
                 nextCache[addr] = {dead = true, retryAt = now + 3}
             end
         end
+      end
     end
     Enemies, EnemyCache = list, nextCache
 end
