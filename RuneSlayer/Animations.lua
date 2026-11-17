@@ -72,7 +72,17 @@ return {
 		} },
 		Screetch = { id = "13984524915", t = { 0.5, 0.6, 0.7, 0.8 }, facing = "AOE" },
 	},
-
+    Basilisk = {
+        facing = "FRWD", -- default facing for everything in Fist
+        range = 15,      -- default range for everything in Fist
+        angle = 70,      -- default angle for everything in Fist
+        type = "parry",  -- default key for everything in Fist
+		
+        PetrifyingBreath = { id = "92643681008788", t = 0.4, type = "dodge" },
+        Slam = { id = "132656652920104", t = 0.3 },
+        Bite = { id = "1", t = 0.35 },
+		ClawSlash = { id = "2", t = 0.625 },
+	},
 
 
 	
