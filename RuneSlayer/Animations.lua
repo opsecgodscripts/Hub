@@ -46,11 +46,18 @@ return {
 
         LeftSwing = { id = "14887593177", t = 0.5 },
 		Stomp = { id = "14889087499", t = 0.6 },
-		Homerun = { id = "14887780810", t = 0.6 },
+		Homerun = { id = "14887780810", hits = {
+			{ t = 0.6, range = 15 },    -- stomp
+			-- { t = 1.2, range = 25 }, -- swing: put its real timing in and remove the -- at the start
+		} },
 		LeapingSlash = { id = "14886897726", t = 1 },
 		KneelingSlash = { id = "14886832498", t = 1.1 },
 		BackSlash = { id = "14890884041", t = 0.275, facing = "BACK" },
-		RagingDemon = { id = "14888911999", t = { 1, 2, 2.5 } },
+		RagingDemon = { id = "14888911999", hits = {
+			{ t = 1, range = 15 },
+			{ t = 2, range = 15 },
+			{ t = 2.5, range = 15 },
+		} },
 	},
     MandrakeKing = {
         facing = "FRWD", -- default facing for everything in Fist
@@ -59,7 +66,10 @@ return {
         type = "parry",  -- default key for everything in Fist
 
         BellyFlop = { id = "13984806725", t = 1 },
-        Punches = { id = "13984923525", t = { 0.4, 0.6 } },
+        Punches = { id = "13984923525", hits = {
+			{ t = 0.4, range = 15 },
+			{ t = 0.6, range = 15 },
+		} },
 		Screetch = { id = "13984524915", t = { 0.5, 0.6, 0.7, 0.8 }, facing = "AOE" },
 	},
 
