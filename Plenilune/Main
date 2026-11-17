@@ -699,6 +699,8 @@ Window = Library:CreateWindow({
     Folder = "Plenilune",
     Size = 560,
 })
+-- hidden until the animation data is in (STARTUP), so the menu doesn't show up half-ready
+Window:Toggle(false)
 
 local mainTab       = Window:CreateTab({ Name = "Auto Parry", Icon = ">" })
 local visualsTab    = Window:CreateTab({ Name = "Visuals", Icon = "*" })
@@ -2970,6 +2972,7 @@ end
 -- STARTUP
 LoadData()
 LoadIgnored()
+Window:Toggle(true)
 RefreshHistLabels()
 
 Window:SetStatus("Loaded " .. Status.loaded .. " anims", true)

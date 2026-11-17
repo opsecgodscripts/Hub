@@ -725,6 +725,8 @@ Window = Library:CreateWindow({
     Folder = "DuelingGrounds",
     Size = 560,
 })
+-- hidden until the animation data is in (STARTUP), so the menu doesn't show up half-ready
+Window:Toggle(false)
 
 -- UiLibrary's Animation Tracker (UI tab) goes by usernames; tell it how characters work here
 Library.LocalCharacter = MyCharacter
@@ -2449,6 +2451,7 @@ end
 -- STARTUP
 LoadData()
 LoadIgnored()
+Window:Toggle(true)
 
 Window:SetStatus("Loaded " .. Status.loaded .. " anims", true)
 Window:Notify(GAME_NAME, "Loaded " .. Status.loaded .. " animations. RightShift toggles the menu.", 5)

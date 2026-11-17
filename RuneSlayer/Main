@@ -4,6 +4,8 @@ local LOG_TAG   = "[RuneSlayer]"
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
 local ANIM_URL   = "https://raw.githubusercontent.com/opsecgodscripts/Hub/refs/heads/main/RuneSlayer/Animations.lua"
 local IGNORE_URL = "https://raw.githubusercontent.com/opsecgodscripts/Hub/refs/heads/main/RuneSlayer/IgnoredAnimations.lua"
+-- names shown on the ESP / in logs for things in workspace.Alive (see the file for how it works)
+local ALIAS_URL  = "https://raw.githubusercontent.com/opsecgodscripts/Hub/refs/heads/main/RuneSlayer/Aliases.lua"
 
 local LOGO_URL = "https://raw.githubusercontent.com/opsecgodscripts/UiLibrary/refs/heads/main/assets/logo.png"
 
@@ -114,47 +116,57 @@ local function DisplayName(name)
 end
 
 -- CHARACTERS
--- Standard Roblox setup: each player's character is their Character model. R6 and R15 both have a
--- HumanoidRootPart and Humanoid > Animator, which is all that is read from them.
--- NPCs straight in workspace that auto parry also watches (needs "Auto Parry NPCs" on). Add names here.
-local NPC_MODELS = {}
+-- Everyone, players and NPCs, is a model in workspace.Alive. Yours is the one named after you (or your
+-- Character); a model is a player when a player has that name, anything else is an NPC. R6 and R15 both
+-- have a HumanoidRootPart and Humanoid > Animator, which is all that is read from them.
+local Aliases = {} -- base name -> name to show (filled from Aliases.lua at startup)
 
 local function MyCharacter()
     local lp = Players.LocalPlayer
-    return lp and lp.Character
+    local alive = workspace:FindFirstChild("Alive")
+    return (lp and alive and alive:FindFirstChild(lp.Name)) or (lp and lp.Character)
 end
 
+local function IsPlayerModel(model)
+    return Players:FindFirstChild(CleanName(model.Name)) ~= nil
+end
+
+-- everyone in workspace.Alive except you
+local function WatchedCharacters()
+    local list = {}
+    local alive = workspace:FindFirstChild("Alive")
+    if not alive then return list end
+    local lp = Players.LocalPlayer
+    local myName = lp and lp.Name
+    for _, model in ipairs(alive:GetChildren()) do
+        if CleanName(model.Name) ~= myName then list[#list + 1] = model end
+    end
+    return list
+end
+
+-- other players / NPCs only (the ESP draws them in different colours)
 local function OtherCharacters()
     local list = {}
-    local lp = Players.LocalPlayer
-    for _, player in ipairs(Players:GetPlayers()) do
-        if player ~= lp then
-            local character = player.Character
-            if character then list[#list + 1] = character end
-        end
+    for _, model in ipairs(WatchedCharacters()) do
+        if IsPlayerModel(model) then list[#list + 1] = model end
     end
     return list
 end
 
--- everyone auto parry watches: other players and the NPC_MODELS
-local function WatchedCharacters()
-    local list = OtherCharacters()
-    if next(NPC_MODELS) ~= nil then
-        for _, model in ipairs(workspace:GetChildren()) do
-            if NPC_MODELS[model.Name] then list[#list + 1] = model end
-        end
+local function NpcCharacters()
+    local list = {}
+    for _, model in ipairs(WatchedCharacters()) do
+        if not IsPlayerModel(model) then list[#list + 1] = model end
     end
     return list
 end
 
--- label for logs / ESP: the humanoid's display name when the game sets one, else the model's name
+-- the name shown for a model: "Lesser Skeleton.2" -> "Lesser Skeleton" (the ".<number>" the game adds is
+-- dropped), then renamed if Aliases.lua lists it
 local function CharacterLabel(model)
-    local ok, name = pcall(function()
-        local hum = model:FindFirstChild("Humanoid")
-        return hum and hum.DisplayName
-    end)
-    if ok and type(name) == "string" and name ~= "" then return name end
-    return CleanName(model.Name)
+    local name = CleanName(model.Name)
+    local base = name:gsub("%.%d+$", "")
+    return Aliases[name] or Aliases[base] or base
 end
 
 local AnimCache, AnimCacheN = {}, 0
@@ -192,7 +204,7 @@ local function BuildEntry(model)
         key = tostring(model.Address),
         hrp = hrp,
         animator = animator,
-        isPlayer = not NPC_MODELS[model.Name],
+        isPlayer = IsPlayerModel(model),
         skipUntil = 0,
     }
 end
@@ -713,6 +725,36 @@ local function LoadIgnored()
     Log("Ignoring " .. n .. " animations")
 end
 
+-- ALIASES (Aliases.lua): { ["Lesser Skeleton"] = "Skeleton", ... }
+local function LoadAliases()
+    for k in pairs(Aliases) do Aliases[k] = nil end
+    local src = HttpGet(FreshUrl(ALIAS_URL))
+    if not src or not src:find("%S") then return end
+    -- run inside a function: Matcha can drop the value a loadstring chunk returns
+    local key = "__Aliases_" .. GAME_NAME
+    _G[key] = nil
+    local fn = loadstring("local __f = function()\n" .. src .. "\nend\n_G[\"" .. key .. "\"] = __f()")
+    if not fn then
+        Log("Aliases.lua has a syntax error")
+        return
+    end
+    pcall(fn)
+    local data = _G[key]
+    _G[key] = nil
+    if type(data) ~= "table" then
+        Log("Aliases.lua didn't return a table")
+        return
+    end
+    local n = 0
+    for from, to in pairs(data) do
+        if type(from) == "string" and type(to) == "string" then
+            Aliases[from] = to
+            n = n + 1
+        end
+    end
+    Log("Loaded " .. n .. " aliases")
+end
+
 -- WINDOW
 -- Title, logo, menu key, theme and font are the UiLibrary template (test.lua), the same in every script;
 -- the subtitle says which game this is. Folder stays per game so each script keeps its own settings.
@@ -726,6 +768,8 @@ Window = Library:CreateWindow({
     Folder = "RuneSlayer",
     Size = 560,
 })
+-- hidden until the animation data is in (STARTUP), so the menu doesn't show up half-ready
+Window:Toggle(false)
 
 -- UiLibrary's Animation Tracker (UI tab) goes by usernames; tell it how characters work here
 Library.LocalCharacter = MyCharacter
@@ -757,7 +801,7 @@ do
         Keybind = "None", -- click the key box to bind a key that flips this
     }))
     Reg("sb_parry_players", parrySec:AddToggle({ Name = "Auto Parry Players", Default = true, Flag = "sb_parry_players" }))
-    -- the NPC_MODELS listed near the top of the script
+    -- everything in workspace.Alive that isn't a player
     Reg("sb_parry_npcs", parrySec:AddToggle({ Name = "Auto Parry NPCs", Default = true, Flag = "sb_parry_npcs" }))
     Reg("sb_parry_chance", parrySec:AddSlider({
         Name = "Parry Chance",
@@ -1037,6 +1081,9 @@ do
         :AddColorPicker({ Default = Color3.fromRGB(255, 80, 80), Flag = "esp_player_color" })
     Reg("esp_self", espSec:AddToggle({ Name = "Self", Default = false, Flag = "esp_self" }))
         :AddColorPicker({ Default = Color3.fromRGB(80, 255, 120), Flag = "esp_self_color" })
+    -- everything in workspace.Alive that isn't a player, named through Aliases.lua
+    Reg("esp_npc", espSec:AddToggle({ Name = "NPCs", Default = false, Flag = "esp_npc" }))
+        :AddColorPicker({ Default = Color3.fromRGB(255, 170, 60), Flag = "esp_npc_color" })
     -- targets further than this are not drawn; 0 draws everything
     Reg("esp_range", espSec:AddSlider({
         Name = "Render Distance",
@@ -1201,6 +1248,7 @@ do
     local KINDS = {
         player = { toggle = "esp_player", color = "esp_player_color" },
         self   = { toggle = "esp_self",   color = "esp_self_color" },
+        npc    = { toggle = "esp_npc",    color = "esp_npc_color" },
     }
 
     local function getHumanoid(model)
@@ -1246,10 +1294,13 @@ do
 
     local function refreshTargets()
         local seen = {}
-        -- other players (Player ESP) and yourself (Self ESP)
+        -- other players (Player ESP), NPCs (NPC ESP) and yourself (Self ESP)
         local targets = {}
         if Get("esp_player") then
             for _, model in ipairs(OtherCharacters()) do targets[#targets + 1] = { model, "player" } end
+        end
+        if Get("esp_npc") then
+            for _, model in ipairs(NpcCharacters()) do targets[#targets + 1] = { model, "npc" } end
         end
         local me = Get("esp_self") and MyCharacter()
         if me then targets[#targets + 1] = { me, "self" } end
@@ -1551,7 +1602,7 @@ do
         local wasOn = false
         local lastErr
         while Window.Running do
-            local onPlayers = Get("esp_enabled") and (Get("esp_player") or Get("esp_self"))
+            local onPlayers = Get("esp_enabled") and (Get("esp_player") or Get("esp_self") or Get("esp_npc"))
             local wantRange = Get("sb_display_range") and Get("sb_use_general_range")
             local wantTrack = Get("sb_display_track")
             local onRing = wantRange or wantTrack
@@ -2182,6 +2233,7 @@ do
 
     dataSec:AddButton({ Name = "Reload Animations", Callback = function() LoadData() end })
     dataSec:AddButton({ Name = "Reload Ignore List", Callback = function() LoadIgnored() end })
+    dataSec:AddButton({ Name = "Reload Aliases", Callback = function() LoadAliases() end })
     dataSec:AddButton({
         Name = "Print Animations",
         Callback = function()
@@ -2204,7 +2256,7 @@ do
     local st = {
         loaded = statSec:AddStatus("Loaded anims", "0"),
         ignored = statSec:AddStatus("Ignored anims", "0"),
-        enemies = statSec:AddStatus("Players found", "0"),
+        enemies = statSec:AddStatus("Players + NPCs", "0"),
         tracked = statSec:AddStatus("Tracking now", "0"),
         last = statSec:AddStatus("Last animation", "none"),
         dist = statSec:AddStatus("Its distance", "-"),
@@ -2450,6 +2502,8 @@ end
 -- STARTUP
 LoadData()
 LoadIgnored()
+LoadAliases()
+Window:Toggle(true)
 
 Window:SetStatus("Loaded " .. Status.loaded .. " anims", true)
 Window:Notify(GAME_NAME, "Loaded " .. Status.loaded .. " animations. RightShift toggles the menu.", 5)
