@@ -23,9 +23,29 @@ return {
         angle = 70,      -- default angle for everything in Fist
         type = "parry",  -- default key for everything in Fist
 
-        RightPunch = { id = "135903732688268", t = 0.2 },
+        RightPunch = { id = "135903732688268", t = 0.275 },
         LeftPunch = { id = "107381959802983", t = 0.3 },
         Kick = { id = "135803859558995", t = 0.35 },
-		Slam = { id = "89849770926059", t = 0.65 },
+		Slam = { id = "89849770926059", t = 0.625 },
 	},
+    GoblinChampion = {
+        facing = "FRWD", -- default facing for everything in Fist
+        range = 15,      -- default range for everything in Fist
+        angle = 70,      -- default angle for everything in Fist
+        type = "parry",  -- default key for everything in Fist
+
+        Swing = { id = "1", t = 0.275 },
+		Backhand = { id = "2", t = 0.275 },
+		Stomp = { id = "3", t = 0.275 },
+		Homerun = { id = "4", t = 0.275 },
+		LeapingSlash = { id = "14886897726", t = 0.35 },
+		KneelingSlash = { id = "6", t = 0.275 },
+		BackSlash = { id = "7", t = 0.275 },
+		RagingDemon = { id = "8", t = 0.275 },
+	},
+
+
+
+
+	
 }
