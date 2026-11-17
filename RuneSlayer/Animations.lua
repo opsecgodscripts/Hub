@@ -47,7 +47,7 @@ return {
         LeftSwing = { id = "14887593177", t = 0.5, range = 38 },
 		Stomp = { id = "14889087499", t = 0.6 },
 		Homerun = { id = "14887780810", hits = {
-			{ t = 0.6, range = 30 },
+			{ t = 0.5, range = 30 },
 			 { t = 1.2, range = 35 }, 
 		} },
 		LeapingSlash = { id = "14886897726", t = 1 },
