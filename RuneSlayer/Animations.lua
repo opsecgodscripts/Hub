@@ -78,11 +78,12 @@ return {
         angle = 70,      -- default angle for everything in Fist
         type = "parry",  -- default key for everything in Fist
 		
-        PetrifyingBreath = { id = "92643681008788", t = 0.4, type = "dodge" },
-        Slam = { id = "132656652920104", t = 0.45 },
+        PetrifyingBreath = { id = "92643681008788", t = 0.45, type = "dodge" },
+        Slam = { id = "132656652920104", t = 0.6 },
         Bite = { id = "1", t = 0.4 },
-		RightClaw = { id = "132775957325434", t = 0.4 },
-		LeftClaw = { id = "78078748221784", t = 0.4 },
+		RightClaw = { id = "132775957325434", t = 0.6 },
+		LeftClaw = { id = "78078748221784", t = 0.6 },
+		TailSwipe = { id = "103586641712389", t = 0.4 },
 	},
 
 
