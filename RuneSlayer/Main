@@ -1,5 +1,5 @@
 local GAME_NAME = "RuneSlayer"
-local VERSION   = "v1.0.3" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.4" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -1928,10 +1928,18 @@ local function FireDue()
             end
 
             if fire then
-                local note = ""
+                -- why facing let this through, so a wrong parry can be traced from the log
+                local note
+                local facing = tostring(q.info and q.info.facing or "FRWD")
                 if faceAngle then
-                    note = string.format(" (%s, %.0f deg off, limit %.0f)", tostring(q.info and q.info.facing or "FRWD"), faceAngle, faceLimit or 0)
-                elseif q.enemy and Get("ap_facing_check") and (q.info and q.info.facing) ~= "AOE" then
+                    note = string.format(" (%s, %.0f deg off, limit %.0f)", facing, faceAngle, faceLimit or 0)
+                elseif not Get("ap_facing_check") then
+                    note = " (facing not checked: Require Facing is off)"
+                elseif facing == "AOE" then
+                    note = " (AOE: facing not checked)"
+                elseif not q.enemy then
+                    note = " (facing not checked: no enemy entry)"
+                else
                     local _, why = AnimCfg.AngleFrom(q.enemy.hrp)
                     note = " (facing not checked: " .. tostring(why) .. ")"
                 end
