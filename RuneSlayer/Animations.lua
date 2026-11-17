@@ -17,15 +17,15 @@
 ]]
 
 return {
-    Fist = {
+    LesserSkeleton = {
         facing = "FRWD", -- default facing for everything in Fist
         range = 15,      -- default range for everything in Fist
         angle = 70,      -- default angle for everything in Fist
         type = "parry",  -- default key for everything in Fist
 
-        M1 = { id = "1", t = 0.3 },
-        M2 = { id = "1", t = 0.3 },
-        Heavy = { id = "1", t = 0.5 },
-        Special = { id = "1", t = 0.5, type = "dodge" },
-    },
+        RightPunch = { id = "135903732688268", t = 0.3 },
+        LeftPunch = { id = "107381959802983", t = 0.3 },
+        Kick = { id = "135803859558995", t = 0.3 },
+		Slam = { id = "89849770926059", t = 0.5 },
+	},
 }
