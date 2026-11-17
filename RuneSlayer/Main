@@ -1,5 +1,5 @@
 local GAME_NAME = "RuneSlayer"
-local VERSION   = "v1.0.5" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.6" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -1764,53 +1764,103 @@ local function Perform(kind, hold, tag, model, id, report, meta)
 end
 
 -- MISC TAB
--- Lighting tweaks. Each one is re-applied twice a second (games often reset lighting) and puts the game's own
--- values back when it is turned off or the script is unloaded. If the executor can't change a property, that is
--- printed once instead of failing silently.
+-- Lighting tweaks, written straight into memory like the Deepwoken script does (Matcha can't set these
+-- properties normally): instance address + the offset from Offsets.json. Each one is re-written every frame while
+-- on (games reset lighting), and the original values are read first and written back when it is turned off or
+-- the script unloads. Problems are printed once each instead of failing silently.
 do
     local Misc = { orig = {}, warned = {} }
     local Lighting = game:GetService("Lighting")
 
-    local function rd(inst, prop)
-        local ok, v = pcall(function() return inst[prop] end)
-        if ok then return v end
+    -- class -> property -> offset. Offsets.json first; these are the values from it at the time of writing.
+    local FALLBACK = {
+        Lighting = { ClockTime = 176, Brightness = 256, FogStart = 280, FogEnd = 276, Ambient = 184,
+            OutdoorAmbient = 232, ExposureCompensation = 268, GlobalShadows = 300 },
+        Atmosphere = { Density = 184, Glare = 188, Haze = 192 },
+        BloomEffect = { Enabled = 152 }, BlurEffect = { Enabled = 152 }, ColorCorrectionEffect = { Enabled = 152 },
+        DepthOfFieldEffect = { Enabled = 152 }, SunRaysEffect = { Enabled = 152 }, ColorGradingEffect = { Enabled = 152 },
+    }
+    local function offsetOf(class, prop)
+        local t = type(offsets) == "table" and offsets[class]
+        local v = type(t) == "table" and t[prop]
+        if type(v) == "number" then return v end
+        return FALLBACK[class] and FALLBACK[class][prop]
+    end
+
+    local function warnOnce(key, msg)
+        if Misc.warned[key] then return end
+        Misc.warned[key] = true
+        Log("Misc: " .. msg)
+    end
+    local function addrOf(inst)
+        local ok, a = pcall(function() return inst.Address end)
+        if ok and type(a) == "number" and a > 4096 then return a end
         return nil
     end
-    local function same(a, b)
-        if type(a) == "number" and type(b) == "number" then return math.abs(a - b) < 0.01 end
-        local okC, eq = pcall(function() return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B) < 0.01 end)
-        if okC then return eq end
-        return a == b
+    local function classOf(inst)
+        local ok, c = pcall(function() return inst.ClassName end)
+        return ok and c or nil
     end
-    -- set inst[prop] = value, remembering what it was the first time
-    function Misc.Set(inst, prop, value)
-        if not inst then return end
-        local cur = rd(inst, prop)
-        if cur ~= nil and same(cur, value) then return end
-        Misc.orig[inst] = Misc.orig[inst] or {}
-        if Misc.orig[inst][prop] == nil and cur ~= nil then Misc.orig[inst][prop] = cur end
-        pcall(function() inst[prop] = value end)
-        local after = rd(inst, prop)
-        local key = tostring(prop)
-        if (after == nil or not same(after, value)) and not Misc.warned[key] then
-            Misc.warned[key] = true
-            Log("Misc: couldn't change " .. key .. " (the executor may not allow writing it)")
+
+    -- kind: "float", "byte" (bools) or "color" (Color3 = three floats in a row)
+    local function memRead(kind, addr)
+        if kind == "color" then
+            local ok, r, g, b = pcall(function()
+                return memory_read("float", addr), memory_read("float", addr + 4), memory_read("float", addr + 8)
+            end)
+            if ok and type(r) == "number" then return { r, g, b } end
+            return nil
         end
+        local ok, v = pcall(memory_read, kind, addr)
+        if ok and type(v) == "number" then return v end
+        return nil
     end
-    function Misc.Restore(inst, props)
-        local saved = inst and Misc.orig[inst]
-        if not saved then return end
-        for _, prop in ipairs(props) do
-            if saved[prop] ~= nil then
-                local v = saved[prop]
-                pcall(function() inst[prop] = v end)
-                saved[prop] = nil
+    local function memWrite(kind, addr, v)
+        if kind == "color" then
+            return pcall(function()
+                memory_write("float", addr, v[1]) memory_write("float", addr + 4, v[2]) memory_write("float", addr + 8, v[3])
+            end)
+        end
+        return pcall(memory_write, kind, addr, v)
+    end
+
+    -- write `value` to inst.<prop>, remembering the original the first time
+    function Misc.Write(inst, class, prop, kind, value)
+        if type(memory_write) ~= "function" or type(memory_read) ~= "function" then
+            return warnOnce("mem", "this executor has no memory_read / memory_write, so lighting can't be changed")
+        end
+        local base, off = addrOf(inst), offsetOf(class, prop)
+        if not base then return warnOnce("addr" .. class, "can't read the address of " .. class) end
+        if not off then return warnOnce("off" .. class .. prop, "no offset for " .. class .. "." .. prop) end
+        local addr = base + off
+        local saved = Misc.orig[addr]
+        if not saved then
+            local cur = memRead(kind, addr)
+            if cur == nil then return warnOnce("read" .. prop, "couldn't read " .. class .. "." .. prop) end
+            Misc.orig[addr] = { kind = kind, value = cur, prop = prop, inst = inst }
+        end
+        local ok, err = memWrite(kind, addr, value)
+        if not ok then warnOnce("write" .. prop, "couldn't write " .. class .. "." .. prop .. ": " .. tostring(err)) end
+    end
+    -- put back every saved value of these properties (any instance)
+    function Misc.Restore(props)
+        local want = {}
+        for _, p in ipairs(props) do want[p] = true end
+        for addr, o in pairs(Misc.orig) do
+            if want[o.prop] then
+                memWrite(o.kind, addr, o.value)
+                Misc.orig[addr] = nil
             end
         end
     end
-    -- children of Lighting (and the camera) of the given classes
-    function Misc.Effects(classes)
-        local out = {}
+
+    -- Atmosphere / screen effects under Lighting and the camera, re-listed once a second
+    local fx, fxAt = {}, 0
+    function Misc.Effects()
+        local now = os.clock()
+        if now < fxAt then return fx end
+        fxAt = now + 1
+        fx = {}
         local holders = { Lighting }
         local cam = workspace.CurrentCamera
         if cam then holders[2] = cam end
@@ -1818,71 +1868,89 @@ do
             local ok, kids = pcall(function() return h:GetChildren() end)
             if ok and type(kids) == "table" then
                 for _, c in ipairs(kids) do
-                    local cls = rd(c, "ClassName")
-                    if cls and classes[cls] then out[#out + 1] = c end
+                    local cls = classOf(c)
+                    if cls and FALLBACK[cls] and cls ~= "Lighting" then fx[#fx + 1] = { inst = c, class = cls } end
                 end
             end
         end
-        return out
+        return fx
     end
 
-    local ATMOS = { Atmosphere = true }
-    local POST = { BlurEffect = true, ColorCorrectionEffect = true, DepthOfFieldEffect = true,
-        BloomEffect = true, SunRaysEffect = true }
+    local function color(c)
+        return { c.R, c.G, c.B }
+    end
 
-    -- name -> { apply = fn, restore = fn } ; each runs only while its toggle is on / when it turns off
+    -- ClockTime's storage type isn't documented: read it as a float, then as a double, and use whichever holds
+    -- a sensible hour (0-24). Nothing sensible: say so once and leave the time alone.
+    local timeKind = nil
+    local function clockKind()
+        if timeKind ~= nil then return timeKind end
+        local base, off = addrOf(Lighting), offsetOf("Lighting", "ClockTime")
+        if not base or not off then return false end
+        for _, k in ipairs({ "float", "double" }) do
+            local v = memRead(k, base + off)
+            if v and v == v and v >= 0 and v <= 24 then timeKind = k return k end
+        end
+        timeKind = false
+        warnOnce("clock", "couldn't make sense of Lighting.ClockTime in memory, Custom Time won't work")
+        return false
+    end
+
     Misc.Features = {
         misc_nofog = {
             apply = function()
-                Misc.Set(Lighting, "FogStart", 100000)
-                Misc.Set(Lighting, "FogEnd", 100000)
-                for _, a in ipairs(Misc.Effects(ATMOS)) do
-                    Misc.Set(a, "Density", 0) Misc.Set(a, "Haze", 0) Misc.Set(a, "Glare", 0)
+                Misc.Write(Lighting, "Lighting", "FogEnd", "float", 1000000)
+                Misc.Write(Lighting, "Lighting", "FogStart", "float", 1000000)
+                for _, e in ipairs(Misc.Effects()) do
+                    if e.class == "Atmosphere" then
+                        Misc.Write(e.inst, "Atmosphere", "Density", "float", 0)
+                        Misc.Write(e.inst, "Atmosphere", "Haze", "float", 0)
+                        Misc.Write(e.inst, "Atmosphere", "Glare", "float", 0)
+                    end
                 end
             end,
-            restore = function()
-                Misc.Restore(Lighting, { "FogStart", "FogEnd" })
-                for a in pairs(Misc.orig) do Misc.Restore(a, { "Density", "Haze", "Glare" }) end
-            end,
+            props = { "FogEnd", "FogStart", "Density", "Haze", "Glare" },
         },
         misc_fullbright = {
             apply = function()
-                local b = Get("misc_fullbright_level") or 2
-                local c = Get("misc_fullbright_color") or Color3.fromRGB(180, 180, 180)
-                Misc.Set(Lighting, "Brightness", b)
-                Misc.Set(Lighting, "Ambient", c)
-                Misc.Set(Lighting, "OutdoorAmbient", c)
-                Misc.Set(Lighting, "ExposureCompensation", 0)
+                local c = color(Get("misc_fullbright_color") or Color3.fromRGB(180, 180, 180))
+                Misc.Write(Lighting, "Lighting", "Brightness", "float", Get("misc_fullbright_level") or 2)
+                Misc.Write(Lighting, "Lighting", "Ambient", "color", c)
+                Misc.Write(Lighting, "Lighting", "OutdoorAmbient", "color", c)
+                Misc.Write(Lighting, "Lighting", "ExposureCompensation", "float", 0)
             end,
-            restore = function() Misc.Restore(Lighting, { "Brightness", "Ambient", "OutdoorAmbient", "ExposureCompensation" }) end,
+            props = { "Brightness", "Ambient", "OutdoorAmbient", "ExposureCompensation" },
         },
         misc_noshadows = {
-            apply = function() Misc.Set(Lighting, "GlobalShadows", false) end,
-            restore = function() Misc.Restore(Lighting, { "GlobalShadows" }) end,
+            apply = function() Misc.Write(Lighting, "Lighting", "GlobalShadows", "byte", 0) end,
+            props = { "GlobalShadows" },
         },
         misc_time = {
-            apply = function() Misc.Set(Lighting, "ClockTime", Get("misc_time_value") or 14) end,
-            restore = function() Misc.Restore(Lighting, { "ClockTime" }) end,
+            apply = function()
+                local k = clockKind()
+                if k then Misc.Write(Lighting, "Lighting", "ClockTime", k, Get("misc_time_value") or 14) end
+            end,
+            props = { "ClockTime" },
         },
         misc_nopost = {
             apply = function()
-                for _, e in ipairs(Misc.Effects(POST)) do Misc.Set(e, "Enabled", false) end
+                for _, e in ipairs(Misc.Effects()) do
+                    if e.class ~= "Atmosphere" then Misc.Write(e.inst, e.class, "Enabled", "byte", 0) end
+                end
             end,
-            restore = function()
-                for e in pairs(Misc.orig) do Misc.Restore(e, { "Enabled" }) end
-            end,
+            props = { "Enabled" },
         },
     }
 
     local function onToggle(flag)
         return function(v)
             local f = Misc.Features[flag]
-            if v then pcall(f.apply) else pcall(f.restore) end
+            if v then pcall(f.apply) else Misc.Restore(f.props) end
         end
     end
 
     local lightSec = miscTab:CreateSection({ Name = "Lighting", Side = "Left" })
-    -- fog distance pushed out and any Atmosphere thinned to nothing
+    -- fog pushed out and any Atmosphere thinned to nothing
     Reg("misc_nofog", lightSec:AddToggle({ Name = "No Fog", Default = false, Flag = "misc_nofog", Callback = onToggle("misc_nofog") }))
     -- bright, even ambient light everywhere (colour = ambient tint)
     Reg("misc_fullbright", lightSec:AddToggle({ Name = "Fullbright", Default = false, Flag = "misc_fullbright",
@@ -1892,7 +1960,7 @@ do
         Flag = "misc_fullbright_level" }))
     Reg("misc_noshadows", lightSec:AddToggle({ Name = "No Shadows", Default = false, Flag = "misc_noshadows",
         Callback = onToggle("misc_noshadows") }))
-    -- turns off blur, colour correction, depth of field, bloom and sun rays
+    -- turns off blur, colour correction / grading, depth of field, bloom and sun rays
     Reg("misc_nopost", lightSec:AddToggle({ Name = "No Screen Effects", Default = false, Flag = "misc_nopost",
         Callback = onToggle("misc_nopost") }))
 
@@ -1902,18 +1970,19 @@ do
     Reg("misc_time_value", timeSec:AddSlider({ Name = "Clock Time", Min = 0, Max = 24, Default = 14, Increment = 0.5,
         Suffix = "h", Flag = "misc_time_value" }))
 
-    -- keep re-applying while on (games reset lighting on their own)
+    -- re-written every frame while anything is on (the game resets lighting); idle otherwise
     task.spawn(function()
         while Window.Running do
+            local any = false
             for flag, f in pairs(Misc.Features) do
-                if Get(flag) then pcall(f.apply) end
+                if Get(flag) then any = true pcall(f.apply) end
             end
-            task.wait(0.5)
+            if any then task.wait() else task.wait(0.25) end
         end
     end)
 
     Window:OnDestroy(function()
-        for _, f in pairs(Misc.Features) do pcall(f.restore) end
+        for _, f in pairs(Misc.Features) do pcall(Misc.Restore, f.props) end
     end)
 end
 
