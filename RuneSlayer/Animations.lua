@@ -47,16 +47,16 @@ return {
         LeftSwing = { id = "14887593177", t = 0.5 },
 		Stomp = { id = "14889087499", t = 0.6 },
 		Homerun = { id = "14887780810", hits = {
-			{ t = 0.6, range = 15 },    -- stomp
-			-- { t = 1.2, range = 25 }, -- swing: put its real timing in and remove the -- at the start
+			{ t = 0.6, range = 30 },
+			 { t = 1.2, range = 35 }, 
 		} },
 		LeapingSlash = { id = "14886897726", t = 1 },
-		KneelingSlash = { id = "14886832498", t = 1.1 },
+		KneelingSlash = { id = "14886832498", t = 1.1, range = 40 },
 		BackSlash = { id = "14890884041", t = 0.275, facing = "BACK" },
 		RagingDemon = { id = "14888911999", hits = {
-			{ t = 1, range = 15 },
-			{ t = 2, range = 15 },
-			{ t = 2.5, range = 15 },
+			{ t = 1, range = 35 },
+			{ t = 2, range = 35 },
+			{ t = 2.5, range = 34 },
 		} },
 	},
     MandrakeKing = {
