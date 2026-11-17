@@ -99,7 +99,7 @@ return {
 	},
     Serpent = {
         facing = "FRWD", -- default facing for everything in Fist
-        range = 25,      -- default range for everything in Fist
+        range = 20,      -- default range for everything in Fist
         angle = 70,      -- default angle for everything in Fist
         type = "parry",  -- default key for everything in Fist
 		
@@ -108,7 +108,7 @@ return {
         Grab = { id = "101667334660847", t = 0.5, type = "dodge" },
         RightBite = { id = "115465881787277", t = 0.4 },
         LeftBite = { id = "110677779719946", t = 0.4 },
-		BiteBarrage = { id = "83015754346811", t = { 0.4, .6, .8 } },
+		BiteBarrage = { id = "83015754346811", t = { 0.4, 0.8, 1.1 } },
 
 	},
 
