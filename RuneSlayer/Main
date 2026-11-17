@@ -1,5 +1,5 @@
 local GAME_NAME = "RuneSlayer"
-local VERSION   = "v1.0.8" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.9" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -74,6 +74,7 @@ local KnownOffsets = {
     ClassDescriptor  = offsets.Instance.ClassDescriptor,
     ClassName        = offsets.Instance.ClassName,
     TimePosition     = offsets.AnimationTrack.TimePosition or 0xD8,
+    TrackSpeed       = offsets.AnimationTrack.Speed or 188,
     ActiveAnimations = offsets.Animator.ActiveAnimations,
     NodeNext         = 0x10,
 }
@@ -285,7 +286,10 @@ local function GetPlayingAnims(enemy)
             if id then
                 local ok, t = pcall(memory_read, "float", track + KnownOffsets.TimePosition)
                 local good = ok and type(t) == "number" and t == t and t >= 0 and t < 30
-                out[#out + 1] = {id = id, elapsed = good and t or 0, track = track}
+                -- playback speed (bosses' second phases play the same animations faster); 1 if unreadable
+                local okS, sp = pcall(memory_read, "float", track + KnownOffsets.TrackSpeed)
+                if not okS or type(sp) ~= "number" or sp ~= sp or sp < 0.05 or sp > 20 then sp = 1 end
+                out[#out + 1] = {id = id, elapsed = good and t or 0, track = track, speed = sp}
             end
         end
         node = ReadPointer(node)
@@ -2162,14 +2166,16 @@ end
 
 -- Every action is queued at startTime + action.t - ping comp and pressed as soon as it is due (next frame at the
 -- latest).
-local function Schedule(startTime, info, akey, model, id, enemy)
+local function Schedule(startTime, info, akey, model, id, enemy, speed)
+    -- timings in the file are at normal speed (1x); an animation played at 1.5x reaches each hit 1.5x sooner
+    speed = speed or 1
     local delay = 0
     local ping  = GetPingComp()
     local hold  = 0.05
     local now   = os.clock()
 
     for _, action in ipairs(info.actions) do
-        local base = startTime + action.t + (info.offset or 0) / 1000
+        local base = startTime + action.t / speed + (info.offset or 0) / 1000
         if base >= now - 0.1 then
             local at = base + ((delay - ping) / 1000)
             local entry = {
@@ -2292,8 +2298,9 @@ local function ScanStep(now)
                         seenNow[ukey] = true
                         if not Active[ukey] then
                             Active[ukey] = now
-                            Log(string.format("Unknown animation %s from %s | %.1f studs | %.2fs in",
-                                id, DisplayName(enemy.name), dist, anim.elapsed or 0))
+                            Log(string.format("Unknown animation %s from %s | %.1f studs | %.2fs in%s",
+                                id, DisplayName(enemy.name), dist, anim.elapsed or 0,
+                                math.abs((anim.speed or 1) - 1) > 0.01 and string.format(" | speed %.2fx", anim.speed) or ""))
                         end
                     end
                     if info and info.enabled ~= false then
@@ -2304,17 +2311,20 @@ local function ScanStep(now)
                         if not Active[akey] then
                             Status.last, Status.lastDist = info.name or id, dist
                             if Get("print_tracked") then
-                                Log(string.format("Tracking %s from %s | %.1f studs | %.2fs in",
-                                    AnimNameId(id), DisplayName(enemy.name), dist, anim.elapsed or 0))
+                                Log(string.format("Tracking %s from %s | %.1f studs | %.2fs in%s",
+                                    AnimNameId(id), DisplayName(enemy.name), dist, anim.elapsed or 0,
+                                    math.abs((anim.speed or 1) - 1) > 0.01 and string.format(" | speed %.2fx", anim.speed) or ""))
                             end
 
                             -- every tracked animation is scheduled (subject to Parry Chance); the range check
                             -- happens when each action comes due (see FireDue)
                             local scheduled = math.random(1, 100) <= (cChance.Value or 100)
                             if scheduled then
-                                local start = os.clock() - (anim.elapsed or 0)
+                                -- TimePosition is in animation seconds, so at 2x speed 0.4s in means 0.2s ago
+                                local sp = anim.speed or 1
+                                local start = os.clock() - (anim.elapsed or 0) / sp
                                 Active[akey] = start
-                                Schedule(start, info, akey, enemy.model, id, enemy)
+                                Schedule(start, info, akey, enemy.model, id, enemy, sp)
                             else
                                 Active[akey] = now
                             end
