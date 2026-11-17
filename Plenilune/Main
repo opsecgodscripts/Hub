@@ -122,8 +122,17 @@ local function GetAnimatorAddr(model)
     local addr = AnimatorCache[key]
     if addr then return addr end
 
-    local hum = model:FindFirstChild("Humanoid")
-    local animator = hum and hum:FindFirstChild("Animator")
+    -- normal rigs keep it in Humanoid; custom rigs (bosses, mobs) in an AnimationController or somewhere deeper
+    local animator = nil
+    for _, holder in ipairs({ "Humanoid", "AnimationController" }) do
+        local h = model:FindFirstChild(holder)
+        animator = h and h:FindFirstChild("Animator")
+        if animator then break end
+    end
+    if not animator then
+        local ok, a = pcall(function() return model:FindFirstChild("Animator", true) end)
+        if ok then animator = a end
+    end
     if not animator then return nil end
 
     if AnimatorCacheN > 300 then AnimatorCache, AnimatorCacheN = {}, 0 end
