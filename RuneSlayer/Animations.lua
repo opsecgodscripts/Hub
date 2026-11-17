@@ -23,9 +23,9 @@ return {
         angle = 70,      -- default angle for everything in Fist
         type = "parry",  -- default key for everything in Fist
 
-        RightPunch = { id = "135903732688268", t = 0.3 },
+        RightPunch = { id = "135903732688268", t = 0.2 },
         LeftPunch = { id = "107381959802983", t = 0.3 },
-        Kick = { id = "135803859558995", t = 0.3 },
-		Slam = { id = "89849770926059", t = 0.5 },
+        Kick = { id = "135803859558995", t = 0.35 },
+		Slam = { id = "89849770926059", t = 0.65 },
 	},
 }
