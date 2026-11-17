@@ -80,7 +80,7 @@ return {
 		
         PetrifyingBreath = { id = "92643681008788", t = 0.45, type = "dodge" },
         Slam = { id = "132656652920104", t = 0.6 },
-        Bite = { id = "80841765084895", t = 0.4 },
+        Bite = { id = "133712885529956", t = 0.4 },
 		RightClaw = { id = "132775957325434", t = 0.6 },
 		LeftClaw = { id = "78078748221784", t = 0.6 },
 		TailSwipe = { id = "103586641712389", t = 0.4 },
