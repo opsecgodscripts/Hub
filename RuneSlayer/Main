@@ -1,5 +1,5 @@
 local GAME_NAME = "RuneSlayer"
-local VERSION   = "v1.0.6" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.7" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -440,32 +440,45 @@ local PLACEHOLDER_IDS = { ["1"] = true } -- the "rbxassetid://1" entries waiting
 local function Normalize(spec)
     if type(spec) == "number" then spec = { pbs = { spec } } end
     if type(spec) ~= "table" then return nil end
-    -- timings: t = 0.4, t = { 0.3, 0.6 }, pbs = { ... }, and also t = 0.3, 0.6 (Lua stores the extra numbers
-    -- in the entry's list part, so they're picked up from there)
-    local times = {}
-    local function addTimes(v)
+    -- Timings: t = 0.4, t = { 0.3, 0.6 }, pbs = { ... }, and t = 0.3, 0.6 (Lua keeps the extra numbers in the
+    -- entry's list part). A hit can carry its own settings, for moves whose hits reach differently:
+    --     hits = { { t = 0.6, range = 10 }, { t = 1.2, range = 25 } }
+    --     t = { 0.6, { t = 1.2, range = 25 } }
+    --     t = { 0.6, 1.2 }, range = { 10, 25 }        (one range per timing, in the order written)
+    -- Per-hit keys: range, type, facing (FRWD / BACK / AOE), angle. Anything a hit leaves out comes from the move.
+    local hits = {}
+    local function addHit(v)
         if type(v) == "number" then
-            times[#times + 1] = v
+            hits[#hits + 1] = { t = v }
+        elseif type(v) == "table" and type(v.t) == "number" then
+            hits[#hits + 1] = { t = v.t, range = tonumber(v.range), kind = v.type and string.lower(tostring(v.type)),
+                facing = (v.facing or v.direction) and AnimCfg.FacingOf(v) or nil, angle = tonumber(v.angle) }
         elseif type(v) == "table" then
-            for _, x in ipairs(v) do
-                if type(x) == "number" then times[#times + 1] = x end
-            end
+            for _, x in ipairs(v) do addHit(x) end
         end
     end
-    addTimes(spec.pbs)
-    addTimes(spec.t)
+    addHit(spec.pbs)
+    addHit(spec.hits)
+    addHit(spec.t)
     for _, x in ipairs(spec) do
-        if type(x) == "number" then times[#times + 1] = x end
+        if type(x) == "number" or (type(x) == "table" and type(x.t) == "number") then addHit(x) end
     end
-    if #times == 0 then return nil end
-    table.sort(times)
+    if #hits == 0 then return nil end
+    -- range = { 10, 25 }: one per timing, in the order they were written
+    if type(spec.range) == "table" then
+        for i, r in ipairs(spec.range) do
+            if hits[i] and not hits[i].range then hits[i].range = tonumber(r) end
+        end
+    end
+    table.sort(hits, function(x, y) return x.t < y.t end)
     local kind = string.lower(tostring(spec.type or "parry"))
     if spec.unparryable and kind ~= "dodge" then kind = "unparryable" end
     local actions = {}
-    for _, t in ipairs(times) do
-        if type(t) == "number" then actions[#actions + 1] = { kind = kind, t = t } end
+    for _, h in ipairs(hits) do
+        actions[#actions + 1] = { kind = h.kind or kind, t = h.t, range = h.range, facing = h.facing, angle = h.angle,
+            ownKind = h.kind }
     end
-    return #actions > 0 and actions or nil, tonumber(spec.range)
+    return actions, tonumber(spec.range)
 end
 
 -- keys that are an animation id themselves: [123], ["123"], ["rbxassetid://123"]
@@ -580,8 +593,11 @@ local function LoadData()
                     if where and move:sub(1, #where.cat + 1) ~= where.cat .. " " then
                         label = where.cat .. (where.sub and (" " .. where.sub) or "") .. " " .. move
                     end
-                    local times = {}
-                    for _, a in ipairs(actions) do times[#times + 1] = a.t end
+                    local times, hitInfo = {}, {}
+                    for i, a in ipairs(actions) do
+                        times[i] = a.t
+                        hitInfo[i] = { range = a.range, facing = a.facing, angle = a.angle, kind = a.ownKind }
+                    end
                     if AnimDB[id] then
                         Log(string.format("Duplicate id %s: %s and %s share it, only %s is kept (fix one of their ids)",
                             id, tostring(AnimDB[id].name), label, label))
@@ -589,10 +605,18 @@ local function LoadData()
                     AnimDB[id] = {
                         name = label, actions = actions, range = range, cat = where and where.cat or e.cat or NO_CATEGORY,
                         -- what the file says; your Config changes are laid on top of this (AnimCfg.ApplyOne)
-                        base = { kind = actions[1].kind, times = times, range = range, facing = AnimCfg.FacingOf(spec),
+                        base = { kind = (function()
+                                local k = string.lower(tostring(type(spec) == "table" and spec.type or "parry"))
+                                if type(spec) == "table" and spec.unparryable and k ~= "dodge" then k = "unparryable" end
+                                return k
+                            end)(),
+                            times = times, hits = hitInfo, range = range, facing = AnimCfg.FacingOf(spec),
                             angle = type(spec) == "table" and tonumber(spec.angle) or AnimCfg.DefaultAngle },
                     }
                     if range and range > AnimMaxRange then AnimMaxRange = range end
+                    for _, a in ipairs(actions) do
+                        if a.range and a.range > AnimMaxRange then AnimMaxRange = a.range end
+                    end
                     n = n + 1
                 else
                     Log("Skipped " .. tostring(e.name or id) .. " (no timings)")
@@ -669,8 +693,15 @@ function AnimCfg.ApplyOne(id)
     local base, o = info.base, AnimCfg.Overrides[id] or {}
     local kind = o.kind or base.kind
     local actions = {}
-    for _, t in ipairs(o.times or base.times) do
-        if type(t) == "number" then actions[#actions + 1] = { kind = kind, t = t } end
+    -- the n-th timing keeps the n-th hit's own settings from the file; Config's Hit Ranges (0 = none) win
+    local hitRanges = type(o.ranges) == "table" and o.ranges or nil
+    for i, t in ipairs(o.times or base.times) do
+        if type(t) == "number" then
+            local h = base.hits and base.hits[i] or {}
+            local r = h.range
+            if hitRanges then r = (tonumber(hitRanges[i]) or 0) > 0 and tonumber(hitRanges[i]) or nil end
+            actions[#actions + 1] = { kind = o.kind or h.kind or kind, t = t, range = r, facing = h.facing, angle = h.angle }
+        end
     end
     info.actions = actions
     info.kind = kind
@@ -686,6 +717,9 @@ function AnimCfg.ApplyAll()
     for id, info in pairs(AnimDB) do
         AnimCfg.ApplyOne(id)
         if info.range and info.range > AnimMaxRange then AnimMaxRange = info.range end
+        for _, a in ipairs(info.actions) do
+            if a.range and a.range > AnimMaxRange then AnimMaxRange = a.range end
+        end
     end
 end
 
@@ -936,6 +970,7 @@ do
     -- Config: pick a class and an animation, then change it. Saved in its own file, not in configs.
     local cfg = { labels = {} } -- labels: dropdown label -> animation id
     local classDD, animDD, idStatus, enabledT, typeDD, dirDD, angleSlider, timesBox, rangeSlider, offsetSlider
+    local hitRangeBox
 
     local function ClassNames()
         local seen, list = {}, {}
@@ -981,11 +1016,20 @@ do
         for _, a in ipairs(info.actions) do parts[#parts + 1] = tostring(a.t) end
         return table.concat(parts, ", ")
     end
+    -- one per timing; "-" = that hit uses the animation's Range
+    local function HitRangesText(info)
+        local parts, any = {}, false
+        for _, a in ipairs(info.actions) do
+            parts[#parts + 1] = a.range and tostring(a.range) or "-"
+            if a.range then any = true end
+        end
+        return any and table.concat(parts, ", ") or ""
+    end
 
     -- shows the picked animation's values (without firing the controls' callbacks)
     local function ShowSelected()
         local info = cfg.id and AnimDB[cfg.id]
-        local editors = { enabledT, typeDD, dirDD, angleSlider, timesBox, rangeSlider, offsetSlider }
+        local editors = { enabledT, typeDD, dirDD, angleSlider, timesBox, hitRangeBox, rangeSlider, offsetSlider }
         for _, c in ipairs(editors) do c:SetVisible(info ~= nil) end
         -- AOE has no facing check, so no angle
         if not info then
@@ -999,6 +1043,7 @@ do
         angleSlider:Set(info.angle or AnimCfg.DefaultAngle, true)
         angleSlider:SetVisible(info.facing ~= "AOE")
         timesBox:Set(TimesText(info), true)
+        hitRangeBox:Set(HitRangesText(info), true)
         rangeSlider:Set(info.range or DEFAULT_ANIM_RANGE, true)
         offsetSlider:Set(info.offset or 0, true)
     end
@@ -1064,7 +1109,25 @@ do
             ShowSelected()
         end,
     })
-    -- used while Use General Range is off
+    -- a range for each timing, in the same order, e.g. "10, 25" ("-" = use Range below). Hits with their own
+    -- range use it even while Use General Range is on. Empty = back to the file's hit ranges.
+    hitRangeBox = editSec:AddTextbox({
+        Name = "Hit Ranges (studs)",
+        Placeholder = "10, 25",
+        Callback = function(text)
+            if not cfg.id then return end
+            text = tostring(text or "")
+            if text:match("^%s*$") then
+                AnimCfg.Set(cfg.id, "ranges", nil)
+            else
+                local ranges = {}
+                for tok in text:gmatch("[^,%s]+") do ranges[#ranges + 1] = tonumber(tok) or 0 end
+                AnimCfg.Set(cfg.id, "ranges", ranges)
+            end
+            ShowSelected()
+        end,
+    })
+    -- used while Use General Range is off (and by hits without their own range)
     rangeSlider = editSec:AddSlider({
         Name = "Range",
         Min = 1, Max = 200, Default = DEFAULT_ANIM_RANGE, Suffix = " studs",
@@ -2053,7 +2116,13 @@ do
             for _, id in ipairs(ids) do
                 local info = AnimDB[id]
                 local times = {}
-                for _, a in ipairs(info.actions) do times[#times + 1] = string.format("%s@%.3f", a.kind, a.t) end
+                for _, a in ipairs(info.actions) do
+                    local extra = ""
+                    if a.range then extra = extra .. " r" .. a.range end
+                    if a.facing then extra = extra .. " " .. a.facing end
+                    if a.angle then extra = extra .. " " .. a.angle .. "deg" end
+                    times[#times + 1] = string.format("%s@%.3f%s", a.kind, a.t, extra)
+                end
                 Log(string.format("%s | %s | %s | %s %s deg | range %s%s", info.name, id, table.concat(times, ", "),
                     tostring(info.facing), tostring(info.angle), tostring(info.range or DEFAULT_ANIM_RANGE),
                     info.enabled == false and " | OFF" or ""))
@@ -2111,6 +2180,9 @@ local function Schedule(startTime, info, akey, model, id, enemy)
                 seenAt     = now,
                 startAt    = startTime,
                 actionT    = action.t,
+                range      = action.range,
+                facing     = action.facing,
+                angle      = action.angle,
             }
             Queue[#Queue + 1] = entry
         end
@@ -2125,12 +2197,19 @@ local function FireDue()
         if t >= q.at then
           -- Tracking Range only decides what gets tracked. The parry itself is only tried if the enemy is inside the
           -- normal range (General Range, or the animation's own base distance) at the moment the action is due.
-          local animRange = Get("sb_use_general_range") and (Get("sb_range") or 20)
+          -- a hit with its own range always uses it (even with General Range on), so a short stomp followed by a
+          -- long swing is judged hit by hit
+          local animRange = q.range or (Get("sb_use_general_range") and (Get("sb_range") or 20))
               or (q.info and q.info.range) or DEFAULT_ANIM_RANGE
           local outRange = q.enemy and Dist(q.enemy) > animRange
           -- the enemy has to be looking at you (AOE: anywhere, BACK: you behind them) when it is due
           local faceOk, faceAngle, faceLimit = true, nil, nil
-          if not outRange and q.enemy then faceOk, faceAngle, faceLimit = AnimCfg.FacingOk(q.enemy, q.info) end
+          -- a hit's own facing / angle beat the animation's
+          local faceInfo = q.info
+          if q.facing or q.angle then
+              faceInfo = { facing = q.facing or (q.info and q.info.facing), angle = q.angle or (q.info and q.info.angle) }
+          end
+          if not outRange and q.enemy then faceOk, faceAngle, faceLimit = AnimCfg.FacingOk(q.enemy, faceInfo) end
           local turned = not faceOk
           if outRange or turned then
             if Get("print_parries") then
@@ -2138,7 +2217,7 @@ local function FireDue()
                 local why = outRange
                     and string.format("enemy %.1f studs away, outside the %.0f stud range", Dist(q.enemy), animRange)
                     or string.format("enemy not facing you (%s, %.0f deg off, limit %.0f)",
-                        tostring(q.info and q.info.facing or "FRWD"), faceAngle or 0, faceLimit or 0)
+                        tostring(faceInfo and faceInfo.facing or "FRWD"), faceAngle or 0, faceLimit or 0)
                 Log(string.format("Skipped %s@%.3f | %s | %s | %s",
                     q.kind, q.actionT or 0, okN and DisplayName(nm) or "?", AnimNameId(q.id), why))
             end
@@ -2154,7 +2233,7 @@ local function FireDue()
             if fire then
                 -- why facing let this through, so a wrong parry can be traced from the log
                 local note
-                local facing = tostring(q.info and q.info.facing or "FRWD")
+                local facing = tostring(faceInfo and faceInfo.facing or "FRWD")
                 if faceAngle then
                     note = string.format(" (%s, %.0f deg off, limit %.0f)", facing, faceAngle, faceLimit or 0)
                 elseif not Get("ap_facing_check") then

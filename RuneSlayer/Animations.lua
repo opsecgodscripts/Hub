@@ -14,6 +14,16 @@
 	  id      the animation id: id = "123" (or several: id = { "123", "456" })
 
 	id = "1" is a placeholder and is skipped: replace it with the real id.
+
+	Moves with several hits that reach differently (a short stomp, then a long swing) can give each hit
+	its own range / facing / angle / type. Each hit is checked on its own, and a hit's own range is
+	used even while "Use General Range" is on:
+	  Homerun = { id = "123", hits = {
+	      { t = 0.6, range = 10 },                  -- stomp
+	      { t = 1.2, range = 25, facing = "AOE" },  -- swing
+	  } },
+	  or shorter, one range per timing in the same order:
+	  Homerun = { id = "123", t = { 0.6, 1.2 }, range = { 10, 25 } },
 ]]
 
 return {
