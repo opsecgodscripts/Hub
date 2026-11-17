@@ -22,7 +22,7 @@ return {
         range = 15,      -- default range for everything in Fist
         angle = 70,      -- default angle for everything in Fist
         type = "parry",  -- default key for everything in Fist
-
+		
         RightPunch = { id = "135903732688268", t = 0.275 },
         LeftPunch = { id = "107381959802983", t = 0.3 },
         Kick = { id = "135803859558995", t = 0.35 },
@@ -42,7 +42,16 @@ return {
 		BackSlash = { id = "14890884041", t = 0.275, facing = "BACK" },
 		RagingDemon = { id = "14888911999", t = { 1, 2, 2.5 } },
 	},
+    MandrakeKing = {
+        facing = "FRWD", -- default facing for everything in Fist
+        range = 15,      -- default range for everything in Fist
+        angle = 70,      -- default angle for everything in Fist
+        type = "parry",  -- default key for everything in Fist
 
+        BellyFlop = { id = "13984806725", t = 1 },
+        Punches = { id = "13984923525", t = { 0.4, 0.6 } },
+		Screetch = { id = "13984524915", t = { 0.5, 0.6, 0.7, 0.8 }, facing = "AOE" },
+	},
 
 
 
