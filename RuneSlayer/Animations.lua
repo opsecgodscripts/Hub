@@ -74,7 +74,7 @@ return {
 	},
     Basilisk = {
         facing = "FRWD", -- default facing for everything in Fist
-        range = 15,      -- default range for everything in Fist
+        range = 25,      -- default range for everything in Fist
         angle = 70,      -- default angle for everything in Fist
         type = "parry",  -- default key for everything in Fist
 		
@@ -85,7 +85,18 @@ return {
 		LeftClaw = { id = "78078748221784", t = 0.6 },
 		TailSwipe = { id = "103586641712389", t = 0.4 },
 	},
-
+    Amphithere = {
+        facing = "FRWD", -- default facing for everything in Fist
+        range = 25,      -- default range for everything in Fist
+        angle = 70,      -- default angle for everything in Fist
+        type = "parry",  -- default key for everything in Fist
+		
+        TailRight = { id = "127825016256671", t = 0.5 },
+        TailLeft = { id = "115400251021553", t = 0.4 },
+        Grab = { id = "107092645797683", t = 0.4, type = "dodge" },
+		Projectile = { id = "93139922084337", t = 0.6 },
+		Dash = { id = "104140223431041", t = 0.6 },
+	},
 
 	
 }
