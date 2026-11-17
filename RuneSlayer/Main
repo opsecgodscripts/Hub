@@ -1,5 +1,5 @@
 local GAME_NAME = "RuneSlayer"
-local VERSION   = "v1.0.4" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.5" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -827,6 +827,7 @@ end)
 
 local mainTab       = Window:CreateTab({ Name = "Auto Parry", Icon = ">" })
 local visualsTab    = Window:CreateTab({ Name = "Visuals", Icon = "*" })
+local miscTab       = Window:CreateTab({ Name = "Misc", Icon = "~" })
 local debugTab      = Window:CreateTab({ Name = "Debug", Icon = "#" })
 
 -- AUTO PARRY TAB
@@ -1760,6 +1761,160 @@ local function Perform(kind, hold, tag, model, id, report, meta)
             kind, tag, KeyName(vk),
             okN and DisplayName(nm) or "?", AnimNameId(id), timing))
     end
+end
+
+-- MISC TAB
+-- Lighting tweaks. Each one is re-applied twice a second (games often reset lighting) and puts the game's own
+-- values back when it is turned off or the script is unloaded. If the executor can't change a property, that is
+-- printed once instead of failing silently.
+do
+    local Misc = { orig = {}, warned = {} }
+    local Lighting = game:GetService("Lighting")
+
+    local function rd(inst, prop)
+        local ok, v = pcall(function() return inst[prop] end)
+        if ok then return v end
+        return nil
+    end
+    local function same(a, b)
+        if type(a) == "number" and type(b) == "number" then return math.abs(a - b) < 0.01 end
+        local okC, eq = pcall(function() return math.abs(a.R - b.R) + math.abs(a.G - b.G) + math.abs(a.B - b.B) < 0.01 end)
+        if okC then return eq end
+        return a == b
+    end
+    -- set inst[prop] = value, remembering what it was the first time
+    function Misc.Set(inst, prop, value)
+        if not inst then return end
+        local cur = rd(inst, prop)
+        if cur ~= nil and same(cur, value) then return end
+        Misc.orig[inst] = Misc.orig[inst] or {}
+        if Misc.orig[inst][prop] == nil and cur ~= nil then Misc.orig[inst][prop] = cur end
+        pcall(function() inst[prop] = value end)
+        local after = rd(inst, prop)
+        local key = tostring(prop)
+        if (after == nil or not same(after, value)) and not Misc.warned[key] then
+            Misc.warned[key] = true
+            Log("Misc: couldn't change " .. key .. " (the executor may not allow writing it)")
+        end
+    end
+    function Misc.Restore(inst, props)
+        local saved = inst and Misc.orig[inst]
+        if not saved then return end
+        for _, prop in ipairs(props) do
+            if saved[prop] ~= nil then
+                local v = saved[prop]
+                pcall(function() inst[prop] = v end)
+                saved[prop] = nil
+            end
+        end
+    end
+    -- children of Lighting (and the camera) of the given classes
+    function Misc.Effects(classes)
+        local out = {}
+        local holders = { Lighting }
+        local cam = workspace.CurrentCamera
+        if cam then holders[2] = cam end
+        for _, h in ipairs(holders) do
+            local ok, kids = pcall(function() return h:GetChildren() end)
+            if ok and type(kids) == "table" then
+                for _, c in ipairs(kids) do
+                    local cls = rd(c, "ClassName")
+                    if cls and classes[cls] then out[#out + 1] = c end
+                end
+            end
+        end
+        return out
+    end
+
+    local ATMOS = { Atmosphere = true }
+    local POST = { BlurEffect = true, ColorCorrectionEffect = true, DepthOfFieldEffect = true,
+        BloomEffect = true, SunRaysEffect = true }
+
+    -- name -> { apply = fn, restore = fn } ; each runs only while its toggle is on / when it turns off
+    Misc.Features = {
+        misc_nofog = {
+            apply = function()
+                Misc.Set(Lighting, "FogStart", 100000)
+                Misc.Set(Lighting, "FogEnd", 100000)
+                for _, a in ipairs(Misc.Effects(ATMOS)) do
+                    Misc.Set(a, "Density", 0) Misc.Set(a, "Haze", 0) Misc.Set(a, "Glare", 0)
+                end
+            end,
+            restore = function()
+                Misc.Restore(Lighting, { "FogStart", "FogEnd" })
+                for a in pairs(Misc.orig) do Misc.Restore(a, { "Density", "Haze", "Glare" }) end
+            end,
+        },
+        misc_fullbright = {
+            apply = function()
+                local b = Get("misc_fullbright_level") or 2
+                local c = Get("misc_fullbright_color") or Color3.fromRGB(180, 180, 180)
+                Misc.Set(Lighting, "Brightness", b)
+                Misc.Set(Lighting, "Ambient", c)
+                Misc.Set(Lighting, "OutdoorAmbient", c)
+                Misc.Set(Lighting, "ExposureCompensation", 0)
+            end,
+            restore = function() Misc.Restore(Lighting, { "Brightness", "Ambient", "OutdoorAmbient", "ExposureCompensation" }) end,
+        },
+        misc_noshadows = {
+            apply = function() Misc.Set(Lighting, "GlobalShadows", false) end,
+            restore = function() Misc.Restore(Lighting, { "GlobalShadows" }) end,
+        },
+        misc_time = {
+            apply = function() Misc.Set(Lighting, "ClockTime", Get("misc_time_value") or 14) end,
+            restore = function() Misc.Restore(Lighting, { "ClockTime" }) end,
+        },
+        misc_nopost = {
+            apply = function()
+                for _, e in ipairs(Misc.Effects(POST)) do Misc.Set(e, "Enabled", false) end
+            end,
+            restore = function()
+                for e in pairs(Misc.orig) do Misc.Restore(e, { "Enabled" }) end
+            end,
+        },
+    }
+
+    local function onToggle(flag)
+        return function(v)
+            local f = Misc.Features[flag]
+            if v then pcall(f.apply) else pcall(f.restore) end
+        end
+    end
+
+    local lightSec = miscTab:CreateSection({ Name = "Lighting", Side = "Left" })
+    -- fog distance pushed out and any Atmosphere thinned to nothing
+    Reg("misc_nofog", lightSec:AddToggle({ Name = "No Fog", Default = false, Flag = "misc_nofog", Callback = onToggle("misc_nofog") }))
+    -- bright, even ambient light everywhere (colour = ambient tint)
+    Reg("misc_fullbright", lightSec:AddToggle({ Name = "Fullbright", Default = false, Flag = "misc_fullbright",
+        Callback = onToggle("misc_fullbright") }))
+        :AddColorPicker({ Default = Color3.fromRGB(180, 180, 180), Flag = "misc_fullbright_color" })
+    Reg("misc_fullbright_level", lightSec:AddSlider({ Name = "Brightness", Min = 0, Max = 10, Default = 2,
+        Flag = "misc_fullbright_level" }))
+    Reg("misc_noshadows", lightSec:AddToggle({ Name = "No Shadows", Default = false, Flag = "misc_noshadows",
+        Callback = onToggle("misc_noshadows") }))
+    -- turns off blur, colour correction, depth of field, bloom and sun rays
+    Reg("misc_nopost", lightSec:AddToggle({ Name = "No Screen Effects", Default = false, Flag = "misc_nopost",
+        Callback = onToggle("misc_nopost") }))
+
+    local timeSec = miscTab:CreateSection({ Name = "Time", Side = "Right" })
+    Reg("misc_time", timeSec:AddToggle({ Name = "Custom Time", Default = false, Flag = "misc_time",
+        Callback = onToggle("misc_time") }))
+    Reg("misc_time_value", timeSec:AddSlider({ Name = "Clock Time", Min = 0, Max = 24, Default = 14, Increment = 0.5,
+        Suffix = "h", Flag = "misc_time_value" }))
+
+    -- keep re-applying while on (games reset lighting on their own)
+    task.spawn(function()
+        while Window.Running do
+            for flag, f in pairs(Misc.Features) do
+                if Get(flag) then pcall(f.apply) end
+            end
+            task.wait(0.5)
+        end
+    end)
+
+    Window:OnDestroy(function()
+        for _, f in pairs(Misc.Features) do pcall(f.restore) end
+    end)
 end
 
 -- DEBUG TAB
