@@ -97,6 +97,19 @@ return {
 		Projectile = { id = "93139922084337", t = 0.6 },
 		Dash = { id = "104140223431041", t = 0.6 },
 	},
+    Serpent = {
+        facing = "FRWD", -- default facing for everything in Fist
+        range = 25,      -- default range for everything in Fist
+        angle = 70,      -- default angle for everything in Fist
+        type = "parry",  -- default key for everything in Fist
+		
+        Flop = { id = "86372608755475", t = 0.5 },
+        TailSwipe = { id = "78770925594588", t = 0.4 },
+        Grab = { id = "1", t = 0.4, type = "dodge" },
+        Grab = { id = "2", t = 0.4, type = "dodge" },
+
+	},
+
 
 	
 }
