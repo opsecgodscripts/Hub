@@ -1,4 +1,5 @@
 local GAME_NAME = "Plenilune"
+local VERSION   = "v1.0.0" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[Plenilune]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, Plenilune folder)
@@ -701,6 +702,7 @@ end
 Window = Library:CreateWindow({
     Title = "Tungity",
     Subtitle = GAME_NAME,
+    Version  = VERSION,
     Logo = LOGO_URL,
     ToggleKey = "RightShift",
     Theme = "Default",

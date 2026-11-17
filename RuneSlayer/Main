@@ -1,4 +1,5 @@
 local GAME_NAME = "RuneSlayer"
+local VERSION   = "v1.0.0" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -770,6 +771,7 @@ end
 Window = Library:CreateWindow({
     Title = "Tungity",
     Subtitle = GAME_NAME,
+    Version  = VERSION,
     Logo = LOGO_URL,
     ToggleKey = "RightShift",
     Theme = "Default",
