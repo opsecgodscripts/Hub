@@ -39,7 +39,7 @@ return {
 		Stomp = { id = "3", t = 0.275 },
 		Homerun = { id = "4", t = 0.275 },
 		LeapingSlash = { id = "14886897726", t = 0.35 },
-		KneelingSlash = { id = "6", t = 0.275 },
+		KneelingSlash = { id = "14886832498", t = 0.4 },
 		BackSlash = { id = "7", t = 0.275 },
 		RagingDemon = { id = "8", t = 0.275 },
 	},
