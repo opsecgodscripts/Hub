@@ -34,14 +34,13 @@ return {
         angle = 70,      -- default angle for everything in Fist
         type = "parry",  -- default key for everything in Fist
 
-        Swing = { id = "1", t = 0.275 },
-		Backhand = { id = "2", t = 0.275 },
-		Stomp = { id = "3", t = 0.275 },
+        LeftSwing = { id = "14887593177", t = 0.3 },
+		Stomp = { id = "14889087499", t = 0.4 },
 		Homerun = { id = "4", t = 0.275 },
 		LeapingSlash = { id = "14886897726", t = 0.35 },
 		KneelingSlash = { id = "14886832498", t = 0.4 },
 		BackSlash = { id = "7", t = 0.275 },
-		RagingDemon = { id = "8", t = 0.275 },
+		RagingDemon = { id = "14888911999", t = 0.275 },
 	},
 
 
