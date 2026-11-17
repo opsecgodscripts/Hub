@@ -21,6 +21,7 @@ local GAMES = {
 	},
 	RuneSlayer = {
 		112498449402953,
+		99995671928896,
 	},
 	-- Deepwoken = { -- add Deepwoken's ids here once Deepwoken/Main has a script
 	-- 	1234567890,
