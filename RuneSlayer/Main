@@ -1,5 +1,5 @@
 local GAME_NAME = "RuneSlayer"
-local VERSION   = "v1.0.2" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.3" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -704,21 +704,29 @@ function AnimCfg.Reset(id)
     AnimCfg.MarkDirty()
 end
 
+-- flat (top-down) angle between where `part` looks and where you are: 0 = looking right at you, 180 = you
+-- are straight behind it. nil (plus why) when it can't be read.
+function AnimCfg.AngleFrom(part)
+    if not part or not LocalHRP then return nil, "no part" end
+    local ok, ex, _, ez, _, _, r02, _, _, _, _, _, r22 = pcall(function() return part.CFrame:GetComponents() end)
+    if not ok or type(r02) ~= "number" then return nil, "rotation unreadable" end
+    local okMe, me = pcall(function() return LocalHRP.Position end)
+    if not okMe then return nil, "your position unreadable" end
+    local dx, dz = me.X - ex, me.Z - ez
+    local lx, lz = -r02, -r22
+    local len = math.sqrt(dx * dx + dz * dz) * math.sqrt(lx * lx + lz * lz)
+    if len < 1e-6 then return nil, "zero look vector" end
+    local cos = math.max(-1, math.min(1, (dx * lx + dz * lz) / len))
+    return math.deg(math.acos(cos)), string.format("look %.2f, %.2f", lx, lz)
+end
+
 -- may this action fire, given where the enemy is looking? Unknown positions never block it.
 function AnimCfg.FacingOk(enemy, info)
     if not Get("ap_facing_check") then return true end
     local mode = info and info.facing or "FRWD"
     if mode == "AOE" or not LocalHRP or not enemy or not enemy.hrp then return true end
-    local ok, ex, _, ez, _, _, r02, _, _, _, _, _, r22 = pcall(function() return enemy.hrp.CFrame:GetComponents() end)
-    local okMe, me = pcall(function() return LocalHRP.Position end)
-    if not ok or not okMe or type(r02) ~= "number" then return true end
-    -- flat (top-down) angle between where they look and where you are
-    local dx, dz = me.X - ex, me.Z - ez
-    local lx, lz = -r02, -r22
-    local len = math.sqrt(dx * dx + dz * dz) * math.sqrt(lx * lx + lz * lz)
-    if len < 1e-6 then return true end
-    local cos = math.max(-1, math.min(1, (dx * lx + dz * lz) / len))
-    local angle = math.deg(math.acos(cos))
+    local angle = AnimCfg.AngleFrom(enemy.hrp)
+    if not angle then return true end
     if mode == "BACK" then angle = 180 - angle end
     local limit = info.angle or AnimCfg.DefaultAngle
     return angle <= limit, angle, limit
@@ -1769,6 +1777,9 @@ do
     Reg("print_tracked", logSec:AddToggle({ Name = "Print Tracked Animations", Default = false, Flag = "print_tracked", Save = false }))
     -- animations enemies play that aren't in your file (or the ignore list): handy for finding new ids
     Reg("print_unknown", logSec:AddToggle({ Name = "Print Unknown Animations", Default = false, Flag = "print_unknown", Save = false }))
+    -- twice a second: how far each part of the nearest enemy is turned away from you (0 = facing you,
+    -- 180 = you are behind it). Shows which part actually turns with the body.
+    Reg("print_facing", logSec:AddToggle({ Name = "Print Facing Probe", Default = false, Flag = "print_facing", Save = false }))
 
     -- tests wait 3 seconds so you can click back into the game, then press through Perform like a real parry
     local busy = false
@@ -1917,7 +1928,14 @@ local function FireDue()
             end
 
             if fire then
-                Perform(q.kind, q.hold, "", q.model, q.id, nil, { seenAt = q.seenAt, startAt = q.startAt, akey = q.owner })
+                local note = ""
+                if faceAngle then
+                    note = string.format(" (%s, %.0f deg off, limit %.0f)", tostring(q.info and q.info.facing or "FRWD"), faceAngle, faceLimit or 0)
+                elseif q.enemy and Get("ap_facing_check") and (q.info and q.info.facing) ~= "AOE" then
+                    local _, why = AnimCfg.AngleFrom(q.enemy.hrp)
+                    note = " (facing not checked: " .. tostring(why) .. ")"
+                end
+                Perform(q.kind, q.hold, note, q.model, q.id, nil, { seenAt = q.seenAt, startAt = q.startAt, akey = q.owner })
             end
           end
 
@@ -2011,6 +2029,40 @@ Window:Notify(GAME_NAME, "Loaded " .. Status.loaded .. " animations. RightShift 
 task.spawn(function()
     task.wait(1)
     ApplyPing(6, true)
+end)
+
+-- FACING PROBE (Debug > Print Facing Probe)
+task.spawn(function()
+    local PARTS = { "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso", "Head" }
+    while Window.Running do
+        if Get("print_facing") then
+            if not LocalHRP or #Enemies == 0 then RefreshEnemies(os.clock()) end
+            local best, bestD = nil, math.huge
+            for _, e in ipairs(Enemies) do
+                local d = Dist(e)
+                if d < bestD then best, bestD = e, d end
+            end
+            if best then
+                local parts = {}
+                for _, n in ipairs(PARTS) do
+                    local part = best.model:FindFirstChild(n)
+                    if part then
+                        local a, why = AnimCfg.AngleFrom(part)
+                        parts[#parts + 1] = a and string.format("%s %.0f deg [%s]", n, a, why) or (n .. " " .. tostring(why))
+                    end
+                end
+                local okP, pp = pcall(function() return best.model.PrimaryPart end)
+                local ppName = okP and pp and pp.Name or "none"
+                Log(string.format("Facing %s | %.1f studs | PrimaryPart %s | %s", DisplayName(best.name), bestD,
+                    ppName, #parts > 0 and table.concat(parts, " | ") or "no known parts"))
+            else
+                Log("Facing probe: nobody nearby")
+            end
+            task.wait(0.5)
+        else
+            task.wait(0.25)
+        end
+    end
 end)
 
 Window:OnDestroy(function()
