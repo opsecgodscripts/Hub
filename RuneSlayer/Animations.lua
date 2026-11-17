@@ -105,8 +105,10 @@ return {
 		
         Flop = { id = "86372608755475", t = 0.5 },
         TailSwipe = { id = "78770925594588", t = 0.4 },
-        Grab = { id = "1", t = 0.4, type = "dodge" },
-        Grab = { id = "2", t = 0.4, type = "dodge" },
+        Grab = { id = "101667334660847", t = 0.5, type = "dodge" },
+        RightBite = { id = "115465881787277", t = 0.4 },
+        LeftBite = { id = "110677779719946", t = 0.4 },
+
 
 	},
 
