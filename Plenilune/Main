@@ -1,5 +1,5 @@
 local GAME_NAME = "Plenilune"
-local VERSION   = "v1.0.0" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.1" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[Plenilune]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, Plenilune folder)
@@ -123,21 +123,27 @@ local function GetAnimatorAddr(model)
     local addr = AnimatorCache[key]
     if addr then return addr end
 
-    -- normal rigs keep it in Humanoid; custom rigs (bosses, mobs) in an AnimationController or somewhere deeper
-    local animator = nil
-    for _, holder in ipairs({ "Humanoid", "AnimationController" }) do
-        local h = model:FindFirstChild(holder)
-        animator = h and h:FindFirstChild("Animator")
-        if animator then break end
+    -- every Animator in the model. Normal rigs have one in the Humanoid; custom rigs (bosses, mobs) often also
+    -- have an AnimationController (or a nested one) that actually plays the attacks while the Humanoid's sits empty.
+    local found, seen = {}, {}
+    local function walk(inst, depth)
+        local ok, kids = pcall(function() return inst:GetChildren() end)
+        if not ok or type(kids) ~= "table" then return end
+        for _, c in ipairs(kids) do
+            local okN, n = pcall(function() return c.Name end)
+            if okN and n == "Animator" then
+                local okA, a = pcall(function() return c.Address end)
+                if okA and a and not seen[a] then seen[a] = true found[#found + 1] = a end
+            elseif depth < 4 then
+                walk(c, depth + 1)
+            end
+        end
     end
-    if not animator then
-        local ok, a = pcall(function() return model:FindFirstChild("Animator", true) end)
-        if ok then animator = a end
-    end
-    if not animator then return nil end
+    walk(model, 1)
+    if #found == 0 then return nil end
 
     if AnimatorCacheN > 300 then AnimatorCache, AnimatorCacheN = {}, 0 end
-    addr = animator.Address
+    addr = found
     AnimatorCache[key] = addr
     AnimatorCacheN = AnimatorCacheN + 1
     return addr
@@ -201,17 +207,16 @@ end
 
 local function GetPlayingAnims(enemy)
     local out = {}
-    local addr = enemy.animator or GetAnimatorAddr(enemy.model)
-    if not addr then return out end
+    local addrs = enemy.animator or GetAnimatorAddr(enemy.model)
+    if not addrs then return out end
 
+  local okCount = 0
+  for _, addr in ipairs(addrs) do
+    -- an unreadable Animator is skipped; only when none can be read is the model looked up again
     local listHead = ReadPointer(addr + KnownOffsets.ActiveAnimations)
-    if not listHead then
-        AnimatorCache[enemy.model.Address] = nil
-        enemy.stale = true
-        return out
-    end
+    if listHead then okCount = okCount + 1 end
 
-    local node, count = ReadPointer(listHead), 0
+    local node, count = listHead and ReadPointer(listHead), 0
     while node and node ~= listHead and count < 50 do
         count = count + 1
         local track = ReadPointer(node + KnownOffsets.NodeNext)
@@ -234,6 +239,11 @@ local function GetPlayingAnims(enemy)
             end
         end
         node = ReadPointer(node)
+    end
+  end
+    if okCount == 0 then
+        AnimatorCache[enemy.model.Address] = nil
+        enemy.stale = true
     end
     return out
 end

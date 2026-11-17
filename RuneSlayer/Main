@@ -1,5 +1,5 @@
 local GAME_NAME = "RuneSlayer"
-local VERSION   = "v1.0.0" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.1" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[RuneSlayer]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, RuneSlayer folder)
@@ -178,21 +178,27 @@ local function GetAnimatorAddr(model)
     local addr = AnimatorCache[key]
     if addr then return addr end
 
-    -- normal rigs keep it in Humanoid; custom rigs (bosses, mobs) in an AnimationController or somewhere deeper
-    local animator = nil
-    for _, holder in ipairs({ "Humanoid", "AnimationController" }) do
-        local h = model:FindFirstChild(holder)
-        animator = h and h:FindFirstChild("Animator")
-        if animator then break end
+    -- every Animator in the model. Normal rigs have one in the Humanoid; custom rigs (bosses, mobs) often also
+    -- have an AnimationController (or a nested one) that actually plays the attacks while the Humanoid's sits empty.
+    local found, seen = {}, {}
+    local function walk(inst, depth)
+        local ok, kids = pcall(function() return inst:GetChildren() end)
+        if not ok or type(kids) ~= "table" then return end
+        for _, c in ipairs(kids) do
+            local okN, n = pcall(function() return c.Name end)
+            if okN and n == "Animator" then
+                local okA, a = pcall(function() return c.Address end)
+                if okA and a and not seen[a] then seen[a] = true found[#found + 1] = a end
+            elseif depth < 4 then
+                walk(c, depth + 1)
+            end
+        end
     end
-    if not animator then
-        local ok, a = pcall(function() return model:FindFirstChild("Animator", true) end)
-        if ok then animator = a end
-    end
-    if not animator then return nil end
+    walk(model, 1)
+    if #found == 0 then return nil end
 
     if AnimatorCacheN > 300 then AnimatorCache, AnimatorCacheN = {}, 0 end
-    addr = animator.Address
+    addr = found
     AnimatorCache[key] = addr
     AnimatorCacheN = AnimatorCacheN + 1
     return addr
@@ -251,17 +257,16 @@ end
 
 local function GetPlayingAnims(enemy)
     local out = {}
-    local addr = enemy.animator or GetAnimatorAddr(enemy.model)
-    if not addr then return out end
+    local addrs = enemy.animator or GetAnimatorAddr(enemy.model)
+    if not addrs then return out end
 
+  local okCount = 0
+  for _, addr in ipairs(addrs) do
+    -- an unreadable Animator is skipped; only when none can be read is the model looked up again
     local listHead = ReadPointer(addr + KnownOffsets.ActiveAnimations)
-    if not listHead then
-        AnimatorCache[enemy.model.Address] = nil
-        enemy.stale = true
-        return out
-    end
+    if listHead then okCount = okCount + 1 end
 
-    local node, count = ReadPointer(listHead), 0
+    local node, count = listHead and ReadPointer(listHead), 0
     while node and node ~= listHead and count < 50 do
         count = count + 1
         local track = ReadPointer(node + KnownOffsets.NodeNext)
@@ -284,6 +289,11 @@ local function GetPlayingAnims(enemy)
             end
         end
         node = ReadPointer(node)
+    end
+  end
+    if okCount == 0 then
+        AnimatorCache[enemy.model.Address] = nil
+        enemy.stale = true
     end
     return out
 end
@@ -706,7 +716,8 @@ function AnimCfg.FacingOk(enemy, info)
     local cos = math.max(-1, math.min(1, (dx * lx + dz * lz) / len))
     local angle = math.deg(math.acos(cos))
     if mode == "BACK" then angle = 180 - angle end
-    return angle <= (info.angle or AnimCfg.DefaultAngle)
+    local limit = info.angle or AnimCfg.DefaultAngle
+    return angle <= limit, angle, limit
 end
 
 AnimCfg.Load()
@@ -1878,13 +1889,16 @@ local function FireDue()
               or (q.info and q.info.range) or DEFAULT_ANIM_RANGE
           local outRange = q.enemy and Dist(q.enemy) > animRange
           -- the enemy has to be looking at you (AOE: anywhere, BACK: you behind them) when it is due
-          local turned = not outRange and q.enemy and not AnimCfg.FacingOk(q.enemy, q.info)
+          local faceOk, faceAngle, faceLimit = true, nil, nil
+          if not outRange and q.enemy then faceOk, faceAngle, faceLimit = AnimCfg.FacingOk(q.enemy, q.info) end
+          local turned = not faceOk
           if outRange or turned then
             if Get("print_parries") then
                 local okN, nm = pcall(function() return q.model.Name end)
                 local why = outRange
                     and string.format("enemy %.1f studs away, outside the %.0f stud range", Dist(q.enemy), animRange)
-                    or ("enemy not facing you (" .. tostring(q.info and q.info.facing or "FRWD") .. ")")
+                    or string.format("enemy not facing you (%s, %.0f deg off, limit %.0f)",
+                        tostring(q.info and q.info.facing or "FRWD"), faceAngle or 0, faceLimit or 0)
                 Log(string.format("Skipped %s@%.3f | %s | %s | %s",
                     q.kind, q.actionT or 0, okN and DisplayName(nm) or "?", AnimNameId(q.id), why))
             end
@@ -1945,7 +1959,6 @@ local function ScanStep(now)
                         end
                     end
                     if info and info.enabled ~= false then
-                        if fs and now + 0.25 > fs.animUntil then fs.animUntil = now + 0.25 end -- keeps the fallback poll on this enemy
                         local akey = enemy.key .. "|" .. id
                         tracked = tracked + 1
                         seenNow[akey] = true
