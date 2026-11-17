@@ -732,12 +732,21 @@ Window:Toggle(false)
 Library.LocalCharacter = MyCharacter
 Library.ListCharacters = function()
     local list = {}
-    for _, model in ipairs(WatchedCharacters()) do list[#list + 1] = { Name = CharacterLabel(model), Model = model } end
+    for _, model in ipairs(OtherCharacters()) do list[#list + 1] = { Name = CharacterLabel(model), Model = model } end
+    return list
+end
+Library.ListNPCs = function()
+    local list = {}
+    for _, model in ipairs(WatchedCharacters()) do
+        if NPC_MODELS[model.Name] then list[#list + 1] = { Name = model.Name, Model = model } end
+    end
     return list
 end
 Window:OnDestroy(function()
     -- another game's script may load the library next
-    if Library.LocalCharacter == MyCharacter then Library.LocalCharacter, Library.ListCharacters = nil, nil end
+    if Library.LocalCharacter == MyCharacter then
+        Library.LocalCharacter, Library.ListCharacters, Library.ListNPCs = nil, nil, nil
+    end
 end)
 
 local mainTab       = Window:CreateTab({ Name = "Auto Parry", Icon = ">" })
