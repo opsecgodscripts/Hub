@@ -1,5 +1,5 @@
 local GAME_NAME = "DuelingGrounds"
-local VERSION   = "v1.0.1" -- bump this every update; shown bottom-right of the menu
+local VERSION   = "v1.0.2" -- bump this every update; shown bottom-right of the menu
 local LOG_TAG   = "[DuelingGrounds]"
 
 -- Animation data and ignore list live in the Hub repo (opsecgodscripts/Hub, DuelingGrounds folder)
@@ -162,8 +162,9 @@ local AnimatorCache, AnimatorCacheN = {}, 0
 
 local function GetAnimatorAddr(model)
     local key = model.Address
-    local addr = AnimatorCache[key]
-    if addr then return addr end
+    local now = os.clock()
+    local c = AnimatorCache[key]
+    if c and now < c.untilT then return c.list end
 
     -- every Animator in the model. Normal rigs have one in the Humanoid; custom rigs (bosses, mobs) often also
     -- have an AnimationController (or a nested one) that actually plays the attacks while the Humanoid's sits empty.
@@ -182,13 +183,14 @@ local function GetAnimatorAddr(model)
         end
     end
     walk(model, 1)
-    if #found == 0 then return nil end
 
+    -- looked at again every second (every 0.25s while none is found): a freshly spawned mob can get its
+    -- AnimationController after its Humanoid, and a new model can reuse a despawned one's address
     if AnimatorCacheN > 300 then AnimatorCache, AnimatorCacheN = {}, 0 end
-    addr = found
-    AnimatorCache[key] = addr
+    local list = #found > 0 and found or nil
+    AnimatorCache[key] = { list = list, untilT = now + (list and 1 or 0.25) }
     AnimatorCacheN = AnimatorCacheN + 1
-    return addr
+    return list
 end
 
 local Enemies, NextRefresh = {}, 0
@@ -199,12 +201,16 @@ local function BuildEntry(model)
     local hrp = model:FindFirstChild("HumanoidRootPart")
     local animator = hrp and GetAnimatorAddr(model)
     if not animator then return nil end
+    local okH, hrpAddr = pcall(function() return hrp.Address end)
+    hrpAddr = okH and hrpAddr or 0
     local name = CharacterLabel(model)
     return {
         model = model,
         name = name,
         lname = string.lower(name),
-        key = tostring(model.Address),
+        -- model + root part address: a respawned mob that lands on the old one's address is still a new key
+        key = tostring(model.Address) .. ":" .. tostring(hrpAddr),
+        hrpAddr = hrpAddr,
         hrp = hrp,
         animator = animator,
         isPlayer = model.Name == OTHER_MODEL,
@@ -223,12 +229,22 @@ local function RefreshEnemies(now)
         if cached and cached.dead and now < cached.retryAt then
             nextCache[addr] = cached
         else
-            local entry = (cached and not cached.dead and not cached.stale) and cached or BuildEntry(model)
+            local entry = (cached and not cached.dead and not cached.stale) and cached or nil
+            if entry then
+                -- same address but a different root part: the mob respawned into the old one's memory
+                local okH, h = pcall(function()
+                    local x = model:FindFirstChild("HumanoidRootPart")
+                    return x and x.Address
+                end)
+                if not okH or h ~= entry.hrpAddr then entry = nil end
+            end
+            entry = entry or BuildEntry(model)
             if entry then
                 nextCache[addr] = entry
                 list[#list + 1] = entry
             else
-                nextCache[addr] = {dead = true, retryAt = now + 3}
+                -- not loaded yet (just spawned): try again on the next refresh rather than seconds later
+                nextCache[addr] = {dead = true, retryAt = now + 0.2}
             end
         end
     end
@@ -244,7 +260,7 @@ end
 
 local function GetPlayingAnims(enemy)
     local out = {}
-    local addrs = enemy.animator or GetAnimatorAddr(enemy.model)
+    local addrs = GetAnimatorAddr(enemy.model) -- cached for a second, so new Animators get picked up
     if not addrs then return out end
 
   local okCount = 0
@@ -2372,7 +2388,7 @@ local function ScanStep(now)
 
     if now >= NextRefresh then
         RefreshEnemies(now)
-        NextRefresh = now + 0.5
+        NextRefresh = now + 0.25
         Feint.PruneTo(Enemies) -- enemies that left (or respawned as a new model) lose their state + listeners
     end
 
