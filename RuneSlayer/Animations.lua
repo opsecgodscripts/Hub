@@ -118,7 +118,9 @@ return {
 		
         OverheadSlam = { id = "15003270957", t = 1 },
         PillarSlap = { id = "15003188623", t = 0.4 },
+		Lunge = { id = "15003435254", t = 0.6 },
         PillarSwing = { id = "15003601140", t = 0.5 },
+		SingleSlam = { id = "1", t = 0.5 },
         DoubleSlam = { id = "15003725933", t = { 0.4, 0.8 } },
 	},
 
