@@ -109,9 +109,18 @@ return {
         RightBite = { id = "115465881787277", t = 0.4 },
         LeftBite = { id = "110677779719946", t = 0.4 },
 		BiteBarrage = { id = "83015754346811", t = { 0.4, 0.8, 1.1 } },
-
 	},
-
+    HillTroll = {
+        facing = "FRWD", -- default facing for everything in Fist
+        range = 25,      -- default range for everything in Fist
+        angle = 70,      -- default angle for everything in Fist
+        type = "parry",  -- default key for everything in Fist
+		
+        OverheadSlam = { id = "15003270957", t = 1 },
+        PillarSlap = { id = "15003188623", t = 0.4 },
+        PillarSwing = { id = "15003601140", t = 0.5 },
+        DoubleSlam = { id = "15003725933", t = { 0.4, 0.8 } },
+	},
 
 	
 }
